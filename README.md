@@ -13,7 +13,9 @@ npm run setup      # downloads + SHA-256-verifies ChordMini (17 MB) and Basic Pi
 npm run dev        # http://localhost:5180 (also on your LAN, for the phone)
 ```
 
-Open the page in Chrome. Pick **Microphone** or **Audio file**, then press
+Open the page in Chrome. It opens in [scale mode](#scale-mode); the **Jam** tab
+(or `?mode=jam`) detects chords, and loads the chord model the first time you
+open it. Pick **Microphone** or **Audio file**, then press
 **Start**. For files you can load a reference `.lab` to get live accuracy.
 **Capture rate** (mic and file only) defaults to 16 kHz, the rate the glasses
 deliver; 22.05, 44.1 and 48 kHz skip that 8 kHz bandwidth limit (`?rate=48000`
@@ -40,15 +42,18 @@ dev server while it runs. It reuses a running `npm run dev`, or starts one.
 
 In the Even Realities app, sign in to the Even Hub developer account, open the
 **Even Hub** tab and tap **Scan QR** (developer section, top right). The phone
-and laptop must be on the same network. The app starts listening on the
-**glasses mic** as soon as the model has loaded (allow a few seconds for the
-17 MB model).
+and laptop must be on the same network. The app opens in scale mode; hold on
+the glasses to switch to jam mode, which starts listening on the **glasses
+mic** as soon as the model has loaded (allow a few seconds for the 17 MB model).
 
-| on the glasses | does |
+In jam mode:
+
+| on the glasses (jam mode) | does |
 |---|---|
 | tap | pause / resume listening |
 | double-tap | switch between the glasses mic and the phone mic |
 | swipe down / up | more / less lookahead: more accurate vs. less lag (±186 ms) |
+| hold | switch to scale mode (and back) |
 
 The display labels every value:
 
@@ -78,6 +83,59 @@ as the model loads, `?backend=webgpu` uses WebGPU for inference, and
 `chordmini`). `essentia` exists only on the dev server (laptop, simulator,
 QR code on the glasses), not in `npm run build` / `npm run pack`; see Credits. The **Detection scheme** selector does the same while you listen:
 switching replaces the detector worker and keeps listening.
+
+## Scale mode
+
+Scale mode is the default (the **Scales** tab; hold on the glasses to switch
+to and from jam mode). It practises scales and doesn't load the chord model. Pick the scale (major, natural or harmonic minor),
+key, hands (right, left or both an octave apart), range (1 or 2 octaves),
+tempo and notes per beat. **Play** gives a one-bar count-in, then runs the
+scale up and down with a metronome click, rests to the end of the bar, and
+moves to the next key around the circle of fifths (or repeats the key). It
+doesn't listen to what you play; that may come later. The fingerings are the
+standard book ones (`src/engine/scales.ts`). A test checks that no thumb lands
+on a black key in any key, hand or range.
+
+```
+L
+    ③  ②     1  ④  ③  ②     1  ③            left-hand fingers, circled = on a black key
+  │  ○  █  │  █  █  █  │  █  │              keyboard: █ black key, ○ / ● = the note to play now
+  │  ○  █  │  █  █  █  │  █  │
+  │  │  │  │  │  │  │  │  │  │
+    ②  ③     1  ②  ③  ④     1  ②            right-hand fingers
+R
+Db major · both hands · 1 oct · 72 bpm
+now Db  R2 L3 · up 1/15 · next Ab major
+```
+
+**Glasses view** (phone page, or `?view=` in the URL) picks one of three
+keyboard drawings (`src/even/scale-views.ts`). None of them use images. All
+put the left hand above the keyboard and the right hand below it, with the L
+and R labels on lines of their own so the keys get the full screen width.
+
+| view | draws |
+|---|---|
+| `keyboard` | the whole run's keyboard in text (above) |
+| `groups` | more keys: at least 15 white keys (2+ octaves, the run padded with neighbouring keys), one outline (an empty bordered list container) per group of white keys (C–E, F–B), black keys as `█` text blocks, short lines for the boundaries under the black keys; fingers above (L) and below (R) |
+| `hands` | the `groups` keyboard drawn twice, left hand above and right hand below, each with that hand's fingers on the keys (circled on black keys); one ● row between them marks the key to play on both; a one-line status |
+
+A page holds 12 containers, 8 of them text; two `hands` keyboards of 5 groups
+each use 10. Containers are transparent and can't be filled, so black keys are
+text blocks, not boxes.
+
+| on the glasses (scale mode) | does |
+|---|---|
+| tap | play / pause (resuming counts in again) |
+| double-tap | next key now |
+| swipe up / down | faster / slower (±4 bpm) |
+| hold | switch to jam mode |
+
+* The G2 font is proportional, so the keyboard is laid out in pixels from
+  glyph widths measured in the simulator (`src/even/keyboard-text.ts`). Real
+  glasses may render slightly differently.
+* The click needs a tap on the phone page (**Play** or **Next key**) to unlock
+  audio. A run started from the glasses alone is silent, and the page says so.
+* Settings are remembered in the browser (`localStorage`).
 
 ## Measuring accuracy (no browser needed)
 

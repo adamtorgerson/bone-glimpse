@@ -13,8 +13,9 @@ import { SCHEME_LABELS, type SchemeId } from '../engine/scheme';
 import { type Chord, displayName, spellChord } from '../engine/theory';
 import { encodeWav16 } from '../engine/wav';
 import { detectEvenBridge } from '../even/bridge';
-import { GlassesDisplay } from '../even/glasses-display';
+import { CHORD_PAGE, GlassesDisplay } from '../even/glasses-display';
 import { type Backend, type BackendState, type FromWorker, type ToWorker } from './protocol';
+import { ScaleMode } from './scale-mode';
 import { isWebSchemeId, WEB_SCHEME_IDS } from './scheme-list';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
@@ -61,7 +62,7 @@ const ui = {
 // ?backend=webgpu picks the inference backend; ?scheme=chroma|basicpitch (|essentia on
 // the dev server) picks
 // the detection scheme (default chordmini); ?rate=22050|44100|48000 the capture rate
-// of the mic/file sources (default 16000, like the glasses).
+// of the mic/file sources (default 16000, like the glasses); ?mode=jam opens jam (chord) mode; scale mode is the default.
 const params = new URLSearchParams(location.search);
 const debug = params.has('debug');
 const schemeParam = params.get('scheme');
@@ -114,6 +115,10 @@ let delays: number[] = [];
 let bridge: EvenAppBridge | undefined;
 let glasses: GlassesDisplay | undefined;
 let glassesAutostart = false;
+
+/** Jam mode ('chord': detect chords) or scale mode (practise scales, the default). */
+type Mode = 'chord' | 'scale';
+let mode: Mode = params.get('mode') === 'jam' || params.get('mode') === 'chord' ? 'chord' : 'scale';
 
 const isEvenSource = (value: string): boolean => value === 'g2' || value === 'g2phone';
 /** The Even SDK only delivers 16 kHz; the laptop/phone sources use the selected rate. */
@@ -254,11 +259,20 @@ const startWorker = (backend: Backend, active: boolean): void => {
   } satisfies ToWorker);
 };
 
+/** The chord models load on first entering jam mode: scale mode never needs them. */
+let modelsStarted = false;
+const loadModels = (): void => {
+  if (modelsStarted) return;
+  modelsStarted = true;
+  setStatus('Loading model…');
+  startWorker('wasm', true);
+};
+
 const onAppReady = (loadMs: number): void => {
   ready = true;
   ui.start.disabled = !!source;
   // Glasses autostart is for the Even mics only: a file/mic source needs a tap to unlock audio.
-  if ((params.has('autostart') || (glassesAutostart && isEvenSource(ui.source.value))) && !source) void start();
+  if (mode === 'chord' && (params.has('autostart') || (glassesAutostart && isEvenSource(ui.source.value))) && !source) void start();
   if (!source) glasses?.set('detail', 'ready · tap to listen', 2);
   setStatus(`${source ? `Listening: ${source.name}` : 'Model ready'} · ${describeBackend('wasm')} · loaded in ${(loadMs / 1000).toFixed(1)} s`);
   // Preload WebGPU only after WASM is up, so the first load isn't slowed down.
@@ -440,7 +454,7 @@ const onTick = (): void => {
 };
 
 const start = async (): Promise<void> => {
-  if (!ready) return;
+  if (!ready || mode !== 'chord') return;
   recording = [];
   recordedSamples = 0;
   events = [];
@@ -523,10 +537,49 @@ const stop = async (): Promise<void> => {
   ui.stop.disabled = true;
   ui.rate.disabled = false;
   ui.download.disabled = recordedSamples === 0;
-  if (ready) setStatus(`Stopped · ${events.length} detections over ${(recordedSamples / sourceRate).toFixed(1)} s`);
+  if (ready && mode === 'chord') setStatus(`Stopped · ${events.length} detections over ${(recordedSamples / sourceRate).toFixed(1)} s`);
+  showChordPaused();
+};
+
+const showChordPaused = (): void => {
   glasses?.set('chord', 'paused', 2);
   glasses?.set('detail', 'tap: listen · double-tap: switch mic', 2);
-  glasses?.set('status', 'swipe up/down: lookahead (accuracy vs. lag)', 2);
+  glasses?.set('status', 'swipe up/down: lookahead (accuracy vs. lag)\nhold: scale mode', 2);
+};
+
+const scales = new ScaleMode(
+  () => glasses,
+  (message) => setStatus(message, true),
+);
+
+/** Switches between jam (chord) and scale mode on the page and the glasses. Chord listening stops first (it holds the mic). */
+const setMode = async (next: Mode): Promise<void> => {
+  if (next === mode) return;
+  if (mode === 'chord') await stop();
+  else scales.leave();
+  mode = next;
+  document.body.dataset.mode = mode;
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.modes button')) b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
+  const url = new URL(location.href);
+  if (mode === 'chord') url.searchParams.set('mode', 'jam');
+  else url.searchParams.delete('mode');
+  window.history.replaceState(null, '', url);
+  // Scale mode draws its own page (its layout depends on the selected view).
+  if (glasses && mode === 'chord') {
+    try {
+      await glasses.show(CHORD_PAGE, 'chord');
+    } catch (error) {
+      setStatus(`Glasses page failed: ${String(error)}`, true);
+    }
+  }
+  if (mode === 'scale') {
+    scales.enter();
+    setStatus('Scale mode');
+  } else {
+    showChordPaused();
+    setStatus(ready ? `Model ready · ${describeBackend()}` : 'Loading model…');
+    loadModels();
+  }
 };
 
 const toggleListening = (): void => {
@@ -562,7 +615,8 @@ const connectGlasses = async (): Promise<void> => {
   ui.source.dispatchEvent(new Event('change'));
   glasses = new GlassesDisplay(bridge);
   try {
-    await glasses.create();
+    const frame = mode === 'scale' ? scales.currentFrame() : { page: CHORD_PAGE, layout: 'chord' };
+    await glasses.create(frame.page, frame.layout);
   } catch (error) {
     if (debug) console.error(`[glasses] ${String(error)}`);
     setStatus(`Glasses page failed: ${String(error)}`, true);
@@ -585,14 +639,18 @@ const connectGlasses = async (): Promise<void> => {
     const gesture = event.textEvent ?? event.sysEvent;
     if (!gesture) return;
     const type = gesture.eventType ?? OsEventTypeList.CLICK_EVENT;
-    if (type === OsEventTypeList.CLICK_EVENT) toggleListening();
+    if (type === OsEventTypeList.LONG_PRESS_RELEASE_EVENT) return;
+    if (type === OsEventTypeList.LONG_PRESS_EVENT) void setMode(mode === 'chord' ? 'scale' : 'chord');
+    else if (mode === 'scale') scales.gesture(type);
+    else if (type === OsEventTypeList.CLICK_EVENT) toggleListening();
     else if (type === OsEventTypeList.DOUBLE_CLICK_EVENT) void switchEvenMic();
     else if (type === OsEventTypeList.SCROLL_TOP_EVENT) nudgeLookahead(-2);
     else if (type === OsEventTypeList.SCROLL_BOTTOM_EVENT) nudgeLookahead(2);
   });
-  setStatus(`Connected to Even app · ${ready ? 'model ready' : 'loading model…'}`);
+  setStatus(`Connected to Even app · ${mode === 'scale' ? 'scale mode' : ready ? 'model ready' : 'loading model…'}`);
   glassesAutostart = true;
-  if (ready && !source && isEvenSource(ui.source.value)) void start();
+  if (mode === 'scale') scales.enter();
+  else if (ready && !source && isEvenSource(ui.source.value)) void start();
 };
 
 const download = (): void => {
@@ -687,6 +745,7 @@ const switchScheme = (next: SchemeId): void => {
   ui.backend.value = 'wasm';
   computeTimes = [];
   setBackendState('webgpu', 'loading');
+  if (!modelsStarted) return; // loads with the new scheme on entering jam mode
   setStatus(`Loading ${SCHEME_LABELS[next]}…`);
   startWorker('wasm', true);
 };
@@ -704,6 +763,7 @@ ui.rate.addEventListener('change', () => {
   window.history.replaceState(null, '', url);
 });
 ui.start.addEventListener('click', () => void start());
+for (const b of document.querySelectorAll<HTMLButtonElement>('.modes button')) b.addEventListener('click', () => void setMode(b.dataset.mode as Mode));
 ui.stop.addEventListener('click', () => void stop());
 ui.download.addEventListener('click', download);
 
@@ -714,6 +774,11 @@ void refreshMics();
 // WASM loads first (always works); WebGPU preloads after it. ?backend=webgpu
 // switches over automatically once WebGPU is ready.
 wantedBackend = params.get('backend') === 'webgpu' ? 'webgpu' : 'wasm';
-startWorker('wasm', true);
 ui.backend.value = wantedBackend;
+document.body.dataset.mode = mode;
+for (const b of document.querySelectorAll<HTMLButtonElement>('.modes button')) b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
+if (mode === 'scale') {
+  scales.enter();
+  setStatus('Scale mode');
+} else loadModels();
 void connectGlasses();

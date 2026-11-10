@@ -88,7 +88,7 @@ button {
   font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
 }
-button#start { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button:disabled { opacity: 0.45; cursor: default; }
 
 .stats dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 16px; }
@@ -98,3 +98,28 @@ button:disabled { opacity: 0.45; cursor: default; }
 .stats.has-ref .ref { display: block; }
 .meter { height: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 99px; overflow: hidden; margin-top: 4px; }
 #meter { height: 100%; width: 0; background: var(--accent); }
+
+/* Modes */
+.modes { display: flex; gap: 4px; margin-top: 8px; }
+.modes button { padding: 6px 14px; }
+.modes button[aria-pressed='true'] { background: var(--accent); border-color: var(--accent); color: #fff; }
+body[data-mode='chord'] .scale-only, body[data-mode='scale'] .chord-only { display: none; }
+
+/* Scale mode */
+.scale-controls { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); align-items: end; }
+.scale-controls .buttons { grid-column: 1 / -1; }
+.g2-scale { aspect-ratio: auto; grid-template-rows: auto auto auto auto; gap: 1.5cqw; }
+.kbd { display: grid; grid-template-rows: 1.5em 18cqw 1.5em; font-size: min(3.8cqw, 48cqw / var(--whites, 8)); }
+.kbd .fingers { position: relative; }
+.kbd .finger { position: absolute; top: 0.1em; transform: translateX(-50%); font-variant-numeric: tabular-nums; line-height: 1.25em; }
+/* Black-key fingers are circled, as on the glasses ("1②", not "12"). */
+.kbd .finger.on-black:not(:empty) { border: 1px solid currentColor; border-radius: 50%; width: 1.25em; text-align: center; font-size: 0.85em; }
+.kbd.right-only .fingers.top, .kbd.left-only .fingers.bottom { visibility: hidden; }
+.kbd .keys { position: relative; }
+.kbd .key { position: absolute; top: 0; box-sizing: border-box; display: flex; align-items: flex-end; justify-content: center; font-size: 0.6em; padding-bottom: 0.3em; color: var(--g2-dim); }
+.kbd .key.white { height: 100%; border: 1px solid var(--g2-dim); border-right-width: 0; }
+.kbd .key.white:nth-last-child(1 of .white) { border-right-width: 1px; }
+.kbd .key.black { height: 60%; background: var(--g2-dim); color: var(--g2-bg); z-index: 1; }
+.kbd .key.in { color: var(--g2); }
+.kbd .key.black.in { color: var(--g2-bg); background: var(--g2-dim); }
+.kbd .key.now { background: var(--g2); color: var(--g2-bg); }

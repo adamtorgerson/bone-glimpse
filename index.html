@@ -9,11 +9,78 @@
   <body>
     <main>
       <header>
-        <h1>BoneGlimpse <span>live chord detection prototype</span></h1>
+        <h1>BoneGlimpse <span>keyboard practice prototype</span></h1>
+        <nav class="modes" aria-label="Mode">
+          <button id="mode-scale" data-mode="scale" aria-pressed="true">Scales</button>
+          <button id="mode-chord" data-mode="chord" aria-pressed="false">Jam</button>
+        </nav>
         <p id="status">Loading model…</p>
       </header>
 
-      <section class="glasses" aria-label="Glasses display preview (576 × 288)">
+      <section class="glasses scale-only" aria-label="Scale mode preview">
+        <div class="g2 g2-scale">
+          <div id="sc-title" class="g2-small"></div>
+          <div id="sc-keyboard" class="kbd"></div>
+          <div id="sc-now" class="g2-note"></div>
+          <div id="sc-next" class="g2-small"></div>
+        </div>
+        <p class="caption">Right-hand fingers above the keys, left-hand below. The glasses draw the same keyboard in text.</p>
+      </section>
+
+      <section class="panel scale-only scale-controls">
+        <div class="field">
+          <label for="sc-type">Scale</label>
+          <select id="sc-type"></select>
+        </div>
+        <div class="field">
+          <label for="sc-key">Key</label>
+          <select id="sc-key"></select>
+        </div>
+        <div class="field">
+          <label for="sc-hands">Hands</label>
+          <select id="sc-hands"></select>
+        </div>
+        <div class="field">
+          <label for="sc-octaves">Range</label>
+          <select id="sc-octaves">
+            <option value="1">1 octave</option>
+            <option value="2">2 octaves</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sc-bpm">Tempo <output id="sc-bpm-out"></output></label>
+          <input id="sc-bpm" type="range" step="1" />
+        </div>
+        <div class="field">
+          <label for="sc-per-beat">Notes per beat</label>
+          <select id="sc-per-beat">
+            <option value="1">1 (quarters)</option>
+            <option value="2">2 (eighths)</option>
+            <option value="4">4 (sixteenths)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sc-after">After each run</label>
+          <select id="sc-after">
+            <option value="next">next key (circle of fifths)</option>
+            <option value="repeat">same key again</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sc-view">Glasses view</label>
+          <select id="sc-view"></select>
+        </div>
+        <div class="field">
+          <label class="check"><input id="sc-click" type="checkbox" checked /> metronome click</label>
+        </div>
+        <div class="buttons">
+          <button id="sc-play" class="primary">Play</button>
+          <button id="sc-stop">Stop</button>
+          <button id="sc-skip">Next key</button>
+        </div>
+      </section>
+
+      <section class="glasses chord-only" aria-label="Glasses display preview (576 × 288)">
         <div class="g2">
           <div class="g2-row">
             <div id="chord" class="g2-chord">–</div>
@@ -31,7 +98,7 @@
         <p class="caption">Glasses preview: G2 canvas 576 × 288, text only (image refresh is too slow for live updates).</p>
       </section>
 
-      <section class="panel controls">
+      <section class="panel controls chord-only">
         <div class="field">
           <label for="source">Source</label>
           <select id="source">
@@ -58,13 +125,13 @@
           <input id="lab" type="file" accept=".lab,.txt" />
         </div>
         <div class="buttons">
-          <button id="start" disabled>Start</button>
+          <button id="start" class="primary" disabled>Start</button>
           <button id="stop" disabled>Stop</button>
           <button id="download" disabled title="WAV (at the capture rate) of exactly what the detector heard + JSON event log">Download session</button>
         </div>
       </section>
 
-      <section class="panel tuning">
+      <section class="panel tuning chord-only">
         <div class="field">
           <label for="lookahead">Lookahead <output id="lookahead-out"></output></label>
           <input id="lookahead" type="range" min="0" max="16" step="1" value="4" />
@@ -95,7 +162,7 @@
         </div>
       </section>
 
-      <section class="panel stats">
+      <section class="panel stats chord-only">
         <dl>
           <div><dt>Input level</dt><dd><div class="meter"><div id="meter"></div></div></dd></div>
           <div><dt>Audio heard</dt><dd id="s-audio">–</dd></div>

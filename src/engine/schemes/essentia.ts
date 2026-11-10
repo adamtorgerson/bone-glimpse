@@ -1,7 +1,10 @@
 // Essentia's classic chord detector: HPCP (harmonic pitch class profile) per
 // frame -> ChordsDetection (24 major/minor templates over a ~2 s centred
 // window). The Essentia instance is injected, so this file stays free of
-// runtime-specific loading (Node vs. browser WASM).
+// runtime-specific loading.
+//
+// essentia.js is AGPL-3.0: the harness (scripts/lib/node-model.ts) and the
+// dev server (src/web/essentia.ts) load it; production builds must not.
 //
 // ChordsDetection only reports a label and a correlation "strength"; the
 // probability vector puts max(strength, 0) on that label and spreads the rest,

@@ -1,6 +1,7 @@
 // Loads the selected chord detection scheme inside a detector worker. Only
 // ChordMini uses onnxruntime (and so WebGPU); the others run on the CPU and
-// their libraries load on demand, so unused schemes cost nothing.
+// their libraries load on demand, so unused schemes cost nothing. Essentia
+// (AGPL) exists only on the dev server, see build-flags.d.ts.
 import { decodeCqtPlan } from '../engine/cqt';
 import { type ChordScheme, type SchemeId, standardVocabulary } from '../engine/scheme';
 import { ChordMiniScheme } from '../engine/schemes/chordmini';
@@ -25,14 +26,12 @@ export const loadWebScheme = async (id: SchemeId, modelsBase: string, backend: B
       return { scheme: new ChromaScheme(plan, standardVocabulary()), threads: 1 };
     }
     case 'essentia': {
-      const [{ EssentiaWASM }, { default: Essentia }, { EssentiaScheme }, { essentiaReady }] = await Promise.all([
-        import('essentia.js/dist/essentia-wasm.es.js'),
-        import('essentia.js/dist/essentia.js-core.es.js'),
-        import('../engine/schemes/essentia'),
-        import('../runtime/essentia-ready'),
-      ]);
-      await essentiaReady(EssentiaWASM);
-      return { scheme: new EssentiaScheme(new Essentia(EssentiaWASM), EssentiaWASM.VectorVectorFloat, standardVocabulary()), threads: 1 };
+      // A compile-time constant: `vite build` removes this import and the chunk.
+      if (__WITH_ESSENTIA__) {
+        const { loadEssentiaScheme } = await import('./essentia');
+        return { scheme: await loadEssentiaScheme(), threads: 1 };
+      }
+      throw new Error('Essentia is only available on the dev server (AGPL-3.0)');
     }
     case 'basicpitch': {
       const [{ setupTfWasm }, { createTfjsNoteModel }, { BasicPitchScheme }] = await Promise.all([

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { decodeCqtPlan } from '../src/engine/cqt';
 import { decide } from '../src/engine/decision';
@@ -38,6 +38,16 @@ describe('scheme vocabulary', () => {
     expect(essentiaLabel('Bbm')).toBe('A#:min');
     expect(essentiaLabel('F#')).toBe('F#');
     expect(vocabIndex(vocab, essentiaLabel('Eb'))).toBe(vocab.labels.indexOf('D#'));
+  });
+});
+
+describe('licensing', () => {
+  it('imports the AGPL essentia.js only from its loaders', () => {
+    // The bundle itself is checked by scripts/check-bundle.ts in `npm run pack`.
+    const allowed = ['engine/schemes/essentia.ts', 'web/essentia.ts', 'web/schemes.ts', 'types/essentia.d.ts'];
+    const files = readdirSync('src', { recursive: true, encoding: 'utf8' }).filter((f) => /\.ts$/.test(f) && !allowed.includes(f));
+    for (const f of files) expect(readFileSync(`src/${f}`, 'utf8'), f).not.toMatch(/(from\s+|import\()\s*['"][^'"]*essentia/i);
+    expect(readFileSync('src/web/schemes.ts', 'utf8')).toMatch(/if \(__WITH_ESSENTIA__\) \{\s*const \{ loadEssentiaScheme \} = await import\('\.\/essentia'\)/);
   });
 });
 

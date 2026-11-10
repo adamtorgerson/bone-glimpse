@@ -7,7 +7,9 @@ const isolation = {
   'Cross-Origin-Embedder-Policy': 'require-corp',
 };
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Essentia (AGPL-3.0) only on the dev server: QR code / simulator yes, `npm run pack` no.
+  define: { __WITH_ESSENTIA__: JSON.stringify(command === 'serve') },
   // Relative asset paths so the packed .ehpk works wherever the Even app serves it.
   base: './',
   // Listen on the LAN so the phone (Even app) can load the dev server via QR code.
@@ -18,4 +20,4 @@ export default defineConfig({
   worker: { format: 'es' },
   optimizeDeps: { exclude: ['onnxruntime-web'] },
   build: { target: 'es2022' },
-});
+}));

@@ -69,8 +69,9 @@ The phone-side page shows the same information plus the tuning controls and stat
 
 URL flags: `?debug` logs detections to the console, `?autostart` starts as soon
 as the model loads, `?backend=webgpu` uses WebGPU for inference, and
-`?scheme=chroma|essentia|basicpitch` picks the detection scheme (default
-`chordmini`). The **Detection scheme** selector does the same while you listen:
+`?scheme=chroma|basicpitch|essentia` picks the detection scheme (default
+`chordmini`). `essentia` exists only on the dev server (laptop, simulator,
+QR code on the glasses), not in `npm run build` / `npm run pack`; see Credits. The **Detection scheme** selector does the same while you listen:
 switching replaces the detector worker and keeps listening.
 
 ## Measuring accuracy (no browser needed)
@@ -106,7 +107,7 @@ and display are shared (`src/engine/scheme.ts`).
 |---|---|---|
 | `chordmini` | CQT → 108-frame transformer (ONNX), the default | ~114 ms/window (batched), ~0.7 s live in Chrome (batch-16 export) |
 | `chroma` | the same CQT folded into treble and bass chroma → binary chord templates → sticky HMM (forward-backward over the last ~2.2 s) | ~30 ms, no model |
-| `essentia` | essentia.js HPCP → `ChordsDetection` (major/minor only, ~2 s centred window) | ~15–40 ms |
+| `essentia` | essentia.js HPCP → `ChordsDetection` (major/minor only, ~2 s centred window); **dev server + harness only** | ~15–40 ms |
 | `basicpitch` | Spotify Basic Pitch note transcription (tfjs, WASM backend) → pitch classes of the notes → same templates and HMM as `chroma` | ~150 ms/window in Node, ~250 ms in Chrome |
 
 Synthetic set (`npm run synth`, 4 songs; `--scheme all --lookaheads 0,2,4,8`):
@@ -215,7 +216,11 @@ musetric/chordmini-onnx (MIT). CQT plan format ported from musetric
 
 Basic Pitch model: Spotify (Apache-2.0), run with TensorFlow.js (Apache-2.0).
 
-Essentia scheme: essentia.js (MTG-UPF), **AGPL-3.0**. The scheme is loaded
-on demand, but `npm run build` / `npm run pack` still bundle it into the app.
-Distributing that build (e.g. uploading the `.ehpk`) puts it under the AGPL.
-Drop the scheme from a release build if that's not acceptable.
+Essentia scheme: essentia.js (MTG-UPF), **AGPL-3.0**, a dev dependency. It
+runs in the harness and on the Vite dev server, so it works on the glasses
+from the QR code (`npm run dev` / `dev:https`). The `__WITH_ESSENTIA__` flag
+(`vite.config.ts`) is false for `vite build`, which removes it from the
+bundle, and `npm run pack` runs `scripts/check-bundle.ts` to refuse an `.ehpk`
+that contains it. Note that `dev:https` makes the dev server reachable by
+anyone with the tunnel URL, which also counts as offering it over a network
+under the AGPL.

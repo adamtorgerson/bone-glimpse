@@ -9,12 +9,13 @@ import { ChordPredictor, type ChordPrediction, chordId } from '../engine/predict
 import { type LabSegment, majmin, parseLab, referenceAt, Score } from '../engine/evaluate';
 import { LiveNoteDetector, type NoteReading } from '../engine/note';
 import { FRAME_SECONDS } from '../engine/model';
-import { isSchemeId, SCHEME_IDS, SCHEME_LABELS, type SchemeId } from '../engine/scheme';
+import { SCHEME_LABELS, type SchemeId } from '../engine/scheme';
 import { type Chord, displayName, spellChord } from '../engine/theory';
 import { encodeWav16 } from '../engine/wav';
 import { detectEvenBridge } from '../even/bridge';
 import { GlassesDisplay } from '../even/glasses-display';
 import { type Backend, type BackendState, type FromWorker, type ToWorker } from './protocol';
+import { isWebSchemeId, WEB_SCHEME_IDS } from './scheme-list';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -56,12 +57,13 @@ const ui = {
 };
 
 // ?debug logs detections to the console; ?autostart starts as soon as the model is ready;
-// ?backend=webgpu picks the inference backend; ?scheme=chroma|essentia|basicpitch picks
+// ?backend=webgpu picks the inference backend; ?scheme=chroma|basicpitch (|essentia on
+// the dev server) picks
 // the detection scheme (default chordmini).
 const params = new URLSearchParams(location.search);
 const debug = params.has('debug');
 const schemeParam = params.get('scheme');
-let scheme: SchemeId = isSchemeId(schemeParam) ? schemeParam : 'chordmini';
+let scheme: SchemeId = isWebSchemeId(schemeParam) ? schemeParam : 'chordmini';
 
 let ready = false;
 let source: PcmSource | undefined;
@@ -675,7 +677,7 @@ const switchScheme = (next: SchemeId): void => {
   setStatus(`Loading ${SCHEME_LABELS[next]}…`);
   startWorker('wasm', true);
 };
-ui.scheme.replaceChildren(...SCHEME_IDS.map((id) => new Option(SCHEME_LABELS[id], id)));
+ui.scheme.replaceChildren(...WEB_SCHEME_IDS.map((id) => new Option(SCHEME_LABELS[id], id)));
 ui.scheme.value = scheme;
 ui.scheme.addEventListener('change', () => switchScheme(ui.scheme.value as SchemeId));
 ui.start.addEventListener('click', () => void start());

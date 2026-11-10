@@ -4,6 +4,7 @@ import { FileSource } from '../audio/file-source';
 import { listMicrophones, MicSource } from '../audio/mic-source';
 import { type PcmSource } from '../audio/source';
 import { type DetectionEvent, defaultDetectorOptions, type DetectorOptions } from '../engine/detector';
+import { KeyEstimator, type KeyEstimate } from '../engine/key';
 import { type LabSegment, majmin, parseLab, referenceAt, Score } from '../engine/evaluate';
 import { FRAME_SECONDS } from '../engine/model';
 import { type Chord, displayName, spellChord } from '../engine/theory';
@@ -19,6 +20,7 @@ const ui = {
   chord: $('chord'),
   levelTag: $('level-tag'),
   confText: $('conf-text'),
+  key: $('key'),
   confBar: $('conf-bar'),
   tones: $('tones'),
   history: $('history'),
@@ -60,6 +62,7 @@ let events: DetectionEvent[] = [];
 let history: { display: string; at: number }[] = [];
 let lastEventAt = 0;
 let shown: Chord | undefined;
+const keyEstimator = new KeyEstimator();
 let reference: LabSegment[] | undefined;
 let screenScore = new Score();
 let labelScore = new Score();
@@ -231,6 +234,9 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
   ui.confText.textContent = `${Math.round(d.confidence * 100)}% sure`;
   ui.confBar.style.width = `${Math.round(d.confidence * 100)}%`;
   ui.tones.textContent = spellChord(d.chord).join('  ');
+  keyEstimator.add(d.chord, event.frameTime, d.confidence);
+  const keyText = keyLabel(keyEstimator.estimate());
+  ui.key.textContent = keyText;
   if (d.level !== 'uncertain' && history[history.length - 1]?.display !== d.display) {
     history.push({ display: d.display, at: performance.now() });
     if (history.length > 8) history.shift();
@@ -248,7 +254,7 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
     const tones = spellChord(d.chord).join('  ');
     const note = d.level === 'simplified' ? ` · maybe ${d.best.display}` : d.level === 'uncertain' ? ' · unsure' : '';
     glasses.set('chord', d.level === 'uncertain' ? `${d.display}?` : d.display, LEVEL_BRIGHTNESS[d.level]);
-    glasses.set('detail', `${tones}\n${Math.round(d.confidence * 10) * 10}%${note}`, 2);
+    glasses.set('detail', `${tones}\n${Math.round(d.confidence * 10) * 10}%${note} · ${keyText}`, 2);
   }
 
   if (reference) {
@@ -256,6 +262,10 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
     ui.sLabel.textContent = `${pct(labelScore.get('majmin'))} majmin · ${pct(labelScore.get('exact'))} exact`;
   }
 };
+
+/** "key G", "key Em?" (ambiguous), or "key …" while there's too little evidence. */
+const keyLabel = (key: KeyEstimate | undefined): string =>
+  key ? `key ${key.display}${key.margin < 0.05 ? '?' : ''}` : 'key …';
 
 const ago = (ms: number): string => {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -313,6 +323,8 @@ const start = async (): Promise<void> => {
   events = [];
   history = [];
   shown = undefined;
+  keyEstimator.reset();
+  ui.key.textContent = '';
   screenScore = new Score();
   labelScore = new Score();
   computeTimes = [];

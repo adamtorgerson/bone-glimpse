@@ -4,7 +4,7 @@
 //   ┌───────────────────────────────────────────┐  576 x 288
 //   │ Am7                                       │  chord   (brightness = confidence)
 //   │ A  C  E  G                                │  detail  (tones, confidence)
-//   │ 82% · simplified from Am7?                │
+//   │ 80% · maybe Am7 · key C                   │
 //   │                                           │
 //   │ G 12s · C 8s · Am 5s · F 2s               │  status  (last 4 chords + age, mic, lag; captures input)
 //   │ glasses mic · ~1.1 s behind · tap=pause   │

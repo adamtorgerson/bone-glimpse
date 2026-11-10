@@ -6,8 +6,8 @@
 //   │ A  C  E  G  → next F in 2s                │  detail  (tones, next-chord prediction,
 //   │ 80% · maybe Am7 · key C                   │           confidence, key)
 //   │                                           │
-//   │ G 12s · C 8s · Am 5s · F 2s               │  status  (last 4 chords + age, mic, lag; captures input)
-//   │ glasses mic · ~1.1 s behind · tap=pause   │
+//   │ G* 12s · Cx 8s · Am* 5s · F* 2s           │  status  (last 4 chords + age, * / x = predicted?,
+//   │ glasses mic · 1.1s behind · next 75%      │           mic, lag, prediction hit rate; captures input)
 //   └───────────────────────────────────────────┘
 import {
   CreateStartUpPageContainer,

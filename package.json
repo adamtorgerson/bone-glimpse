@@ -7,6 +7,7 @@
   "scripts": {
     "setup": "tsx scripts/fetch-model.ts",
     "dev": "vite",
+    "dev:https": "tsx scripts/tunnel.ts",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -24,6 +25,7 @@
     "@evenrealities/evenhub-cli": "^0.2.0",
     "@evenrealities/evenhub-simulator": "^0.9.5",
     "@types/node": "^26.6.6",
+    "cloudflared": "0.7.3",
     "onnxruntime-node": "^1.31.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

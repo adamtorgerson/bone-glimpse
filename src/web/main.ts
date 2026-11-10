@@ -5,7 +5,7 @@ import { listMicrophones, MicSource } from '../audio/mic-source';
 import { type PcmSource } from '../audio/source';
 import { type DetectionEvent, defaultDetectorOptions, type DetectorOptions } from '../engine/detector';
 import { KeyEstimator, type KeyEstimate } from '../engine/key';
-import { ChordPredictor, type ChordPrediction } from '../engine/predict';
+import { ChordPredictor, type ChordPrediction, chordId } from '../engine/predict';
 import { type LabSegment, majmin, parseLab, referenceAt, Score } from '../engine/evaluate';
 import { FRAME_SECONDS } from '../engine/model';
 import { type Chord, displayName, spellChord } from '../engine/theory';
@@ -48,6 +48,7 @@ const ui = {
   sRef: $('s-ref'),
   sScreen: $('s-screen'),
   sLabel: $('s-label'),
+  sPredict: $('s-predict'),
 };
 
 // ?debug logs detections to the console; ?autostart starts as soon as the model is ready;
@@ -60,13 +61,27 @@ let source: PcmSource | undefined;
 let recording: Float32Array[] = [];
 let recordedSamples = 0;
 let events: DetectionEvent[] = [];
-/** Chords in the order they appeared (newest last), with when they first appeared (performance.now()). */
-let history: { display: string; at: number }[] = [];
+/**
+ * Chords in the order they appeared (newest last), with when they first
+ * appeared (performance.now()) and whether the predictor saw them coming.
+ */
+let history: { display: string; id?: string; at: number; mark?: string }[] = [];
 let lastEventAt = 0;
 let shown: Chord | undefined;
 const keyEstimator = new KeyEstimator();
 const predictor = new ChordPredictor();
 let prediction: ChordPrediction | undefined;
+/**
+ * Scoring of predictions against the chord changes that followed. The G2 font
+ * lacks ✓/✗, so the glasses get ASCII marks ("*" = predicted, "x" = missed);
+ * "+"/"-" would read as aug/minor.
+ */
+const HIT = '✓';
+const MISS = '✗';
+const GLASSES_MARKS: Record<string, string> = { [HIT]: '*', [MISS]: 'x' };
+let predictionHits = 0;
+let predictionTotal = 0;
+let predictionTiming: number[] = []; // actual - predicted change time (s)
 /** Glasses detail text around the "next" prediction, kept so the countdown can refresh it. */
 let detailTones = '';
 let detailLine2 = '';
@@ -214,7 +229,8 @@ const onAppReady = (loadMs: number): void => {
   setStatus(`Model ready · ${describeBackend('wasm')} · loaded in ${(loadMs / 1000).toFixed(1)} s`);
   // Preload WebGPU only after WASM is up, so the first load isn't slowed down.
   if ('gpu' in navigator) startWorker('webgpu', false);
-  else setBackendState('webgpu', 'unavailable', 'this browser has no WebGPU');
+  // navigator.gpu only exists in secure contexts (HTTPS or localhost).
+  else setBackendState('webgpu', 'unavailable', isSecureContext ? 'this browser has no WebGPU' : 'WebGPU needs HTTPS (page is not a secure context)');
 };
 
 const onDetection = (event: DetectionEvent, backend: Backend): void => {
@@ -245,12 +261,14 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
   const key = keyEstimator.estimate();
   const keyText = keyLabel(key);
   ui.key.textContent = keyText;
-  if (d.level !== 'uncertain') predictor.add(d.chord, event.frameTime);
-  prediction = predictor.predict(key);
+  const change = d.level !== 'uncertain' ? predictor.add(d.chord, event.frameTime) : undefined;
   if (d.level !== 'uncertain' && history[history.length - 1]?.display !== d.display) {
-    history.push({ display: d.display, at: performance.now() });
+    history.push({ display: d.display, id: chordId(d.chord), at: performance.now() });
     if (history.length > 8) history.shift();
   }
+  // A chord change was just confirmed: score the prediction that was showing before it.
+  if (change && prediction) scorePrediction(prediction, change);
+  prediction = predictor.predict(key);
   renderHistory();
 
   ui.sCompute.textContent = `${event.computeMs.toFixed(0)} ms (median ${median(computeTimes).toFixed(0)}) · ${BACKEND_LABELS[backend]}`;
@@ -298,6 +316,19 @@ const renderNext = (): void => {
   glasses.set('detail', `${detailTones}${next ? `  → ${next}` : ''}\n${detailLine2}`, 2);
 };
 
+const scorePrediction = (predicted: ChordPrediction, change: { id: string; start: number }): void => {
+  const hit = chordId(predicted.chord) === change.id;
+  predictionTotal++;
+  if (hit) predictionHits++;
+  if (predicted.changeAt !== undefined) predictionTiming.push(change.start - predicted.changeAt);
+  // Mark the history entry for the new chord (the newest one with its triad, e.g. Am7 for Am).
+  const entry = [...history].reverse().find((h) => h.id === change.id);
+  if (entry) entry.mark = hit ? HIT : MISS;
+  const abs = predictionTiming.map(Math.abs);
+  const timing = abs.length ? ` · timing off by ${median(abs).toFixed(1)} s (median)` : '';
+  ui.sPredict.textContent = `${predictionHits}/${predictionTotal} right (${pct(predictionHits / predictionTotal)})${timing} · last: ${hit ? HIT : `${MISS} said ${predicted.display}`}`;
+};
+
 /** "key G", "key Em?" (ambiguous), or "key …" while there's too little evidence. */
 const keyLabel = (key: KeyEstimate | undefined): string =>
   key ? `key ${key.display}${key.margin < 0.05 ? '?' : ''}` : 'key …';
@@ -308,25 +339,25 @@ const ago = (ms: number): string => {
 };
 
 /** The 4 chords before the current one, oldest first, each with how long ago it first appeared. */
-const historyLine = (): string => {
+const historyLine = (forGlasses = false): string => {
   const now = performance.now();
   return history
     .slice(-5, -1)
-    .map((h) => `${h.display} ${ago(now - h.at)}`)
+    .map((h) => `${h.display}${(forGlasses && h.mark ? GLASSES_MARKS[h.mark] : h.mark) ?? ''} ${ago(now - h.at)}`)
     .join(' · ');
 };
 
 /** Redraws the history in the preview and on the glasses (whole seconds, so the glasses update at most 1x/s). */
 const renderHistory = (): void => {
-  const line = historyLine();
-  ui.history.textContent = line;
-  glasses?.set('status', `${line}\n${statusLine(median(delays))}`, 2);
+  ui.history.textContent = historyLine();
+  glasses?.set('status', `${historyLine(true)}\n${statusLine(median(delays))}`, 2);
 };
 
 const statusLine = (delay?: number): string => {
   const mic = ui.source.value === 'g2' ? 'glasses mic' : ui.source.value === 'g2phone' ? 'phone mic' : ui.source.value;
   const lag = delay !== undefined && !Number.isNaN(delay) ? ` · ${delay.toFixed(1)}s behind` : '';
-  return `${mic}${lag} · look ${ms(Number(ui.lookahead.value))}`;
+  const predicted = predictionTotal ? ` · next ${Math.round((100 * predictionHits) / predictionTotal)}%` : '';
+  return `${mic}${lag} · look ${ms(Number(ui.lookahead.value))}${predicted}`;
 };
 
 // Sample what is on screen vs what is playing, 10x per second.
@@ -362,6 +393,9 @@ const start = async (): Promise<void> => {
   keyEstimator.reset();
   predictor.reset();
   prediction = undefined;
+  predictionHits = predictionTotal = 0;
+  predictionTiming = [];
+  ui.sPredict.textContent = '–';
   detailTones = detailLine2 = '';
   ui.next.textContent = '';
   ui.key.textContent = '';

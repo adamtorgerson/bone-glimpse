@@ -44,7 +44,7 @@ type Segment = {
 };
 
 /** Segment identity: root + triad family, so 7ths/extensions don't split a chord. */
-const chordId = (chord: Chord): string | undefined => {
+export const chordId = (chord: Chord): string | undefined => {
   if (chord.kind !== 'chord') return undefined;
   const family = chordFamily(chord);
   return `${chord.root}:${family === 'other' || !family ? chord.quality : family}`;
@@ -120,12 +120,15 @@ export class ChordPredictor {
     return [...this.segments, ...(this.current ? [this.current] : [])].map((s) => s.id);
   }
 
-  /** Adds a confident detection (skip uncertain ones) at stream time `time`. */
-  add(chord: Chord, time: number): void {
+  /**
+   * Adds a confident detection (skip uncertain ones) at stream time `time`.
+   * Returns the new chord segment when this detection confirms a chord change.
+   */
+  add(chord: Chord, time: number): { id: string; start: number } | undefined {
     const dt = this.lastTime === undefined ? 0 : Math.max(0, Math.min(2, time - this.lastTime));
     this.lastTime = time;
     const id = chordId(chord);
-    if (!id) return; // N.C./unknown: neither extends nor breaks a segment
+    if (!id) return undefined; // N.C./unknown: neither extends nor breaks a segment
     const note = (seg: Segment): void => {
       const name = displayName(chord);
       const v = seg.variants.get(name) ?? { chord, seconds: 0 };
@@ -134,13 +137,13 @@ export class ChordPredictor {
     };
     if (!this.current) {
       this.current = { id, start: time, end: time, variants: new Map() };
-      return;
+      return undefined;
     }
     if (id === this.current.id) {
       this.current.end = time;
       this.candidate = undefined;
       note(this.current);
-      return;
+      return undefined;
     }
     if (this.candidate?.id !== id) this.candidate = { id, start: time, end: time, variants: new Map() };
     this.candidate.end = time;
@@ -150,7 +153,9 @@ export class ChordPredictor {
       this.finish(this.current);
       this.current = this.candidate;
       this.candidate = undefined;
+      return { id: this.current.id, start: this.current.start };
     }
+    return undefined;
   }
 
   private finish(seg: Segment): void {

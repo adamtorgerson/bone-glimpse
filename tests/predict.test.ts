@@ -21,6 +21,15 @@ describe('chord prediction', () => {
     expect(p.sequence).toEqual(['9:min', '5:maj']);
   });
 
+  it('reports a chord change once it is confirmed', () => {
+    const p = new ChordPredictor();
+    play(p, ['C'], 4);
+    expect(p.add(parseChord('G:7'), 1.4)).toBeUndefined(); // not held long enough yet
+    expect(p.add(parseChord('G:7'), 1.7)).toBeUndefined();
+    expect(p.add(parseChord('G:7'), 2.0)).toEqual({ id: '7:maj', start: 1.4 });
+    expect(p.add(parseChord('G:7'), 2.3)).toBeUndefined();
+  });
+
   it('predicts a repeated loop from the pattern, with the song voicing', () => {
     const p = new ChordPredictor();
     play(p, ['C', 'G:7', 'A:min', 'F', 'C', 'G:7', 'A:min', 'F', 'C']);

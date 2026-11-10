@@ -24,7 +24,14 @@ With `npm run dev` running:
 
 ```sh
 npm run qr         # QR code for http://<LAN-IP>:5180/
+npm run dev:https  # or: HTTPS via a Cloudflare quick tunnel, QR code for https://…trycloudflare.com/
 ```
+
+Prefer `dev:https`: browsers only enable WebGPU, multi-threaded WASM
+(SharedArrayBuffer), AudioWorklet and the microphone on secure (HTTPS) pages,
+so over plain `http://<LAN-IP>` the phone runs single-threaded WASM only. The
+tunnel URL is random and changes per run, but anyone who has it can reach the
+dev server while it runs. It reuses a running `npm run dev`, or starts one.
 
 In the Even Realities app, sign in to the Even Hub developer account, open the
 **Even Hub** tab and tap **Scan QR** (developer section, top right). The phone
@@ -132,7 +139,7 @@ mic / file / (later) Even G2 audioEvent
   in headless Chrome (software rendering) it took about 60 s to load and was too
   slow to produce results.
 * For mic testing from a **phone** browser, getUserMedia needs HTTPS on
-  anything other than localhost.
+  anything other than localhost: use `npm run dev:https`.
 * Synthetic test songs are easy. Real recordings with `.lab` annotations are
   needed to judge the model.
 

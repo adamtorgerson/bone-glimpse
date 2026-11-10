@@ -12,7 +12,8 @@ export default defineConfig({
   base: './',
   // Listen on the LAN so the phone (Even app) can load the dev server via QR code.
   // Fixed port (another G2 project commonly sits on Vite's default 5173).
-  server: { headers: isolation, host: true, port: 5180, strictPort: true },
+  // allowedHosts: the HTTPS quick tunnel (npm run dev:https) for the phone.
+  server: { headers: isolation, host: true, port: 5180, strictPort: true, allowedHosts: ['.trycloudflare.com'] },
   preview: { headers: isolation },
   worker: { format: 'es' },
   optimizeDeps: { exclude: ['onnxruntime-web'] },

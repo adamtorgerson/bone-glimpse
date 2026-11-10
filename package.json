@@ -1,0 +1,33 @@
+{
+  "name": "boneglimpse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BoneGlimpse prototype: live chord detection, laptop/phone test build (no glasses yet)",
+  "scripts": {
+    "setup": "tsx scripts/fetch-model.ts",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "eval": "tsx scripts/eval.ts",
+    "synth": "tsx scripts/synth.ts",
+    "sim": "evenhub-simulator http://localhost:5180",
+    "qr": "tsx scripts/qr.ts",
+    "pack": "npm run build && evenhub pack app.json dist -o boneglimpse.ehpk"
+  },
+  "dependencies": {
+    "@evenrealities/even_hub_sdk": "^0.0.16",
+    "onnxruntime-web": "^1.31.1"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "^0.2.0",
+    "@evenrealities/evenhub-simulator": "^0.9.5",
+    "@types/node": "^26.6.6",
+    "onnxruntime-node": "^1.31.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.7",
+    "vitest": "^5.1.0"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "package_id": "com.boneglimpse.app",
+  "edition": "202601",
+  "name": "BoneGlimpse",
+  "version": "0.1.0",
+  "min_sdk_version": "0.0.16",
+  "entrypoint": "index.html",
+  "permissions": [
+    { "name": "g2-microphone", "desc": "Listens to the music around you to recognise the chords being played." },
+    { "name": "phone-microphone", "desc": "Optionally listens through the phone microphone to recognise chords." }
+  ],
+  "supported_languages": ["en"]
+}

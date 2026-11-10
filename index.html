@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BoneGlimpse prototype</title>
+    <link rel="stylesheet" href="/src/web/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>BoneGlimpse <span>live chord detection prototype</span></h1>
+        <p id="status">Loading model…</p>
+      </header>
+
+      <section class="glasses" aria-label="Glasses display preview (576 × 288)">
+        <div class="g2">
+          <div class="g2-row">
+            <div id="chord" class="g2-chord">–</div>
+            <div class="g2-side">
+              <div id="level-tag" class="g2-tag"></div>
+              <div id="conf-text" class="g2-small"></div>
+            </div>
+          </div>
+          <div id="tones" class="g2-tones"></div>
+          <div class="g2-bar"><div id="conf-bar"></div></div>
+          <div id="history" class="g2-history"></div>
+        </div>
+        <p class="caption">Glasses preview: G2 canvas 576 × 288, text only (image refresh is too slow for live updates).</p>
+      </section>
+
+      <section class="panel controls">
+        <div class="field">
+          <label for="source">Source</label>
+          <select id="source">
+            <option value="mic">Microphone</option>
+            <option value="file">Audio file (plays in real time)</option>
+          </select>
+        </div>
+        <div class="field" id="mic-field">
+          <label for="mic">Microphone</label>
+          <select id="mic"><option value="">Default</option></select>
+        </div>
+        <div class="field hidden" id="file-field">
+          <label for="file">Audio file</label>
+          <input id="file" type="file" accept="audio/*" />
+          <label class="check"><input id="audible" type="checkbox" checked /> play through speakers</label>
+        </div>
+        <div class="field hidden" id="lab-field">
+          <label for="lab">Reference chords (.lab, optional)</label>
+          <input id="lab" type="file" accept=".lab,.txt" />
+        </div>
+        <div class="buttons">
+          <button id="start" disabled>Start</button>
+          <button id="stop" disabled>Stop</button>
+          <button id="download" disabled title="16 kHz WAV of exactly what the detector heard + JSON event log">Download session</button>
+        </div>
+      </section>
+
+      <section class="panel tuning">
+        <div class="field">
+          <label for="lookahead">Lookahead <output id="lookahead-out"></output></label>
+          <input id="lookahead" type="range" min="0" max="16" step="1" value="4" />
+          <small>More = more accurate but later.</small>
+        </div>
+        <div class="field">
+          <label for="step">Update every <output id="step-out"></output></label>
+          <input id="step" type="range" min="1" max="8" step="1" value="3" />
+        </div>
+        <div class="field">
+          <label for="full">Full-chord threshold <output id="full-out"></output></label>
+          <input id="full" type="range" min="0" max="1" step="0.05" value="0.5" />
+        </div>
+        <div class="field">
+          <label for="family">Triad fallback threshold <output id="family-out"></output></label>
+          <input id="family" type="range" min="0" max="1" step="0.05" value="0.5" />
+        </div>
+        <div class="field">
+          <label for="backend">Inference backend</label>
+          <select id="backend">
+            <option value="wasm">WASM (CPU)</option>
+            <option value="webgpu">WebGPU</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="panel stats">
+        <dl>
+          <div><dt>Input level</dt><dd><div class="meter"><div id="meter"></div></div></dd></div>
+          <div><dt>Audio heard</dt><dd id="s-audio">–</dd></div>
+          <div><dt>Analysis time</dt><dd id="s-compute">–</dd></div>
+          <div><dt>Display delay</dt><dd id="s-delay">–</dd></div>
+          <div><dt>Top guesses</dt><dd id="s-top">–</dd></div>
+          <div class="ref"><dt>Reference now</dt><dd id="s-ref">–</dd></div>
+          <div class="ref"><dt>On-screen accuracy</dt><dd id="s-screen">–</dd></div>
+          <div class="ref"><dt>Label accuracy</dt><dd id="s-label">–</dd></div>
+        </dl>
+      </section>
+    </main>
+    <script type="module" src="/src/web/main.ts"></script>
+  </body>
+</html>

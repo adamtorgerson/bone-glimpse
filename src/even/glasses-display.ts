@@ -2,12 +2,13 @@
 // place (textContainerUpgrade) much faster than images (~800 ms full refresh).
 //
 //   ┌───────────────────────────────────────────┐  576 x 288
-//   │ Am7                                       │  chord   (brightness = confidence)
-//   │ A  C  E  G  → next F in 2s                │  detail  (tones, next-chord prediction,
-//   │ 80% · maybe Am7 · key C                   │           confidence, key)
-//   │                                           │
-//   │ G* 12s · Cx 8s · Am* 5s · F* 2s           │  status  (last 4 chords + age, * / x = predicted?,
-//   │ glasses mic · 1.1s behind · next 75%      │           mic, lag, prediction hit rate; captures input)
+//   │ chord Am · 70% · maybe Am7                │  chord   (brightness = confidence; "?" = unsure,
+//   │                                           │           "maybe" = fell back to the triad)
+//   │ tones A C E · next F in 2s                │  detail  (chord tones, next-chord prediction,
+//   │ key C · note E5 80%                       │           key, the one note that stands out)
+//   │ last G* 12s · Cx 8s · Am* 5s · F* 2s      │  status  (last 4 chords + age, * / x = predicted?,
+//   │ mic glasses · lag 1.1s · look 372 ms ·    │           mic, lag, lookahead, prediction hit
+//   │ hits 75%                                  │           rate; captures input)
 //   └───────────────────────────────────────────┘
 import {
   CreateStartUpPageContainer,

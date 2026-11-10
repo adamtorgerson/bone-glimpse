@@ -7,6 +7,7 @@ import { type DetectionEvent, defaultDetectorOptions, type DetectorOptions } fro
 import { KeyEstimator, type KeyEstimate } from '../engine/key';
 import { ChordPredictor, type ChordPrediction, chordId } from '../engine/predict';
 import { type LabSegment, majmin, parseLab, referenceAt, Score } from '../engine/evaluate';
+import { LiveNoteDetector, type NoteReading } from '../engine/note';
 import { FRAME_SECONDS } from '../engine/model';
 import { type Chord, displayName, spellChord } from '../engine/theory';
 import { encodeWav16 } from '../engine/wav';
@@ -25,6 +26,7 @@ const ui = {
   next: $('next'),
   confBar: $('conf-bar'),
   tones: $('tones'),
+  note: $('note'),
   history: $('history'),
   source: $<HTMLSelectElement>('source'),
   mic: $<HTMLSelectElement>('mic'),
@@ -85,6 +87,12 @@ let predictionTiming: number[] = []; // actual - predicted change time (s)
 /** Glasses detail text around the "next" prediction, kept so the countdown can refresh it. */
 let detailTones = '';
 let detailLine2 = '';
+/** Last chord line sent to the glasses, re-sent dimmed when detections go stale. */
+let chordGlasses = '';
+/** Single-note detection runs here on the UI thread: it is cheap and must not wait behind the chord model. */
+const noteDetector = new LiveNoteDetector();
+let noteReadings: NoteReading[] = [];
+let noteGlasses = '';
 let reference: LabSegment[] | undefined;
 let screenScore = new Score();
 let labelScore = new Score();
@@ -279,11 +287,12 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
     .join(' · ');
 
   if (glasses) {
-    const tones = spellChord(d.chord).join('  ');
-    const note = d.level === 'simplified' ? ` · maybe ${d.best.display}` : d.level === 'uncertain' ? ' · unsure' : '';
-    glasses.set('chord', d.level === 'uncertain' ? `${d.display}?` : d.display, LEVEL_BRIGHTNESS[d.level]);
-    detailTones = tones;
-    detailLine2 = `${Math.round(d.confidence * 10) * 10}%${note} · ${keyText}`;
+    // Every value gets a short label: "chord Am · 70% · maybe Am7" / "tones A C E · next F in 2s" / "key C · note E5 80%".
+    const maybe = d.level === 'simplified' ? ` · maybe ${d.best.display}` : '';
+    chordGlasses = `chord ${d.display}${d.level === 'uncertain' ? '?' : ''} · ${Math.round(d.confidence * 10) * 10}%${maybe}`;
+    glasses.set('chord', chordGlasses, LEVEL_BRIGHTNESS[d.level]);
+    detailTones = `tones ${spellChord(d.chord).join(' ') || '–'}`;
+    detailLine2 = keyText;
   }
   renderNext();
 
@@ -313,7 +322,27 @@ const renderNext = (): void => {
   ui.next.textContent = nextLabel(false);
   if (!glasses || !detailTones) return;
   const next = nextLabel(true);
-  glasses.set('detail', `${detailTones}${next ? `  → ${next}` : ''}\n${detailLine2}`, 2);
+  glasses.set('detail', `${detailTones}${next ? ` · ${next}` : ''}\n${detailLine2} · ${noteGlasses || 'note –'}`, 2);
+};
+
+/**
+ * The one note that stands out, if any: "note E5 +8¢ · 82%" (clear),
+ * "note E5? · 52%" (weak) or dimmed "no single note" otherwise. The glasses get
+ * " · note E5 80%" (10% steps, no cents) so they only update when it matters.
+ */
+const renderNote = (r: NoteReading): void => {
+  const n = r.note;
+  ui.note.className = `g2-note ${r.level}`;
+  if (!n) {
+    ui.note.textContent = 'no single note';
+    noteGlasses = '';
+  } else {
+    const cents = Math.round(n.cents);
+    const percent = Math.round(n.confidence * 100);
+    ui.note.textContent = `note ${n.name}${r.level === 'weak' ? '?' : ''} ${cents >= 0 ? '+' : '−'}${Math.abs(cents)}¢ · ${percent}%`;
+    noteGlasses = `note ${n.name}${r.level === 'weak' ? '?' : ''} ${Math.round(n.confidence * 10) * 10}%`;
+  }
+  renderNext();
 };
 
 const scorePrediction = (predicted: ChordPrediction, change: { id: string; start: number }): void => {
@@ -350,14 +379,14 @@ const historyLine = (forGlasses = false): string => {
 /** Redraws the history in the preview and on the glasses (whole seconds, so the glasses update at most 1x/s). */
 const renderHistory = (): void => {
   ui.history.textContent = historyLine();
-  glasses?.set('status', `${historyLine(true)}\n${statusLine(median(delays))}`, 2);
+  glasses?.set('status', `last ${historyLine(true) || '–'}\n${statusLine(median(delays))}`, 2);
 };
 
 const statusLine = (delay?: number): string => {
-  const mic = ui.source.value === 'g2' ? 'glasses mic' : ui.source.value === 'g2phone' ? 'phone mic' : ui.source.value;
-  const lag = delay !== undefined && !Number.isNaN(delay) ? ` · ${delay.toFixed(1)}s behind` : '';
-  const predicted = predictionTotal ? ` · next ${Math.round((100 * predictionHits) / predictionTotal)}%` : '';
-  return `${mic}${lag} · look ${ms(Number(ui.lookahead.value))}${predicted}`;
+  const mic = ui.source.value === 'g2' ? 'glasses' : ui.source.value === 'g2phone' ? 'phone' : ui.source.value;
+  const lag = delay !== undefined && !Number.isNaN(delay) ? ` · lag ${delay.toFixed(1)}s` : '';
+  const predicted = predictionTotal ? ` · hits ${Math.round((100 * predictionHits) / predictionTotal)}%` : '';
+  return `mic ${mic}${lag} · look ${ms(Number(ui.lookahead.value))}${predicted}`;
 };
 
 // Sample what is on screen vs what is playing, 10x per second.
@@ -368,7 +397,7 @@ const onTick = (): void => {
   renderNext();
   if (lastEventAt && performance.now() - lastEventAt > 2000) {
     ui.chord.classList.add('stale');
-    if (glasses && performance.now() - lastEventAt > 3000) glasses.set('chord', ui.chord.textContent ?? ' ', 1);
+    if (glasses && performance.now() - lastEventAt > 3000) glasses.set('chord', chordGlasses || ' ', 1);
   }
   if (reference) {
     const ref = referenceAt(reference, heard);
@@ -396,7 +425,10 @@ const start = async (): Promise<void> => {
   predictionHits = predictionTotal = 0;
   predictionTiming = [];
   ui.sPredict.textContent = '–';
-  detailTones = detailLine2 = '';
+  detailTones = detailLine2 = noteGlasses = chordGlasses = '';
+  noteDetector.reset();
+  noteReadings = [];
+  ui.note.textContent = '';
   ui.next.textContent = '';
   ui.key.textContent = '';
   screenScore = new Score();
@@ -432,6 +464,9 @@ const start = async (): Promise<void> => {
       recordedSamples += pcm.length;
       ui.meter.style.width = `${Math.min(100, Math.sqrt(level) * 250)}%`;
       send({ type: 'audio', pcm });
+      const readings = noteDetector.push(pcm);
+      noteReadings.push(...readings);
+      if (readings.length) renderNote(readings[readings.length - 1]);
     });
     setStatus(`Listening: ${source.name}`);
     glasses?.set('chord', '…', 2);
@@ -563,6 +598,9 @@ const download = (): void => {
           confidence: e.decision.confidence,
           top: e.decision.top,
         })),
+        notes: noteReadings
+          .filter((r) => r.note)
+          .map((r) => ({ time: r.time, level: r.level, note: r.note!.name, cents: r.note!.cents, confidence: r.note!.confidence })),
       },
       null,
       2,

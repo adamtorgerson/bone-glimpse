@@ -45,10 +45,17 @@ and laptop must be on the same network. The app starts listening on the
 | double-tap | switch between the glasses mic and the phone mic |
 | swipe down / up | more / less lookahead: more accurate vs. less lag (±186 ms) |
 
-The display shows the chord (brightness = confidence; a trailing `?` means
-unsure), its tones, a confidence percentage ("maybe Am7" when it fell back to
-the triad), the last few chords, and how far behind the music it is. The
-phone-side page shows the same thing plus the tuning controls and stats.
+The display labels every value:
+
+```
+chord Am · 70% · maybe Am7              brightness = confidence; "?" = unsure, "maybe" = fell back to the triad
+tones A C E · next F in 2s              chord tones, predicted next chord
+key C · note E5 80%                     estimated key, the one note that stands out ("?" = weak, "–" = none)
+last G* 12s · Cx 8s · Am* 5s · F* 2s    last chords + age (* / x = predicted or missed)
+mic glasses · lag 1.1s · look 372 ms · hits 75%
+```
+
+The phone-side page shows the same information plus the tuning controls and stats.
 
 * **Simulator:** `npm run sim` opens the official evenhub-simulator against
   the dev server. It records the glasses mic from your default input device.
@@ -109,6 +116,20 @@ mic / file / (later) Even G2 audioEvent
 * **Fallback:** if the full chord is below the threshold but its triad family
   (e.g. Am7, Am6 and Am together) is above it, the display shows the triad.
   Otherwise the result is shown as unsure.
+* **Single notes** (`src/engine/note.ts`) don't use the chord model, which only
+  knows chord labels. They come from a separate harmonic-salience detector on
+  the raw 16 kHz audio: a 256 ms FFT every 64 ms, covering E1–C8. That's wider
+  than the model CQT's C1–B6. It runs on the UI thread (about 0.2 ms per frame),
+  so it never waits on inference. Confidence is the geometric mean of two
+  measures: *share*, the fraction of the energy in that note's partials, and
+  *dominance*, how far it is ahead of the strongest other note. A solo note
+  scores about 100%, a melody note over a chord about 50% at 1.5× and 75% at
+  3× louder, and an even triad 15–20%. ≥ 70% shows the note, ≥ 45% shows it
+  with a `?`, and anything lower shows "no single note". A note has to win 2
+  of the last 3 frames before it is shown. Known limits: a tone with no
+  fundamental at all reads an octave high. In a band mix it usually reports
+  the bass line, because the chord's partials sit on the bass root's harmonic
+  series.
 
 ## Status and known limits
 

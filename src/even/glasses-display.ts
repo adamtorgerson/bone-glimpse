@@ -6,7 +6,7 @@
 //   │ A  C  E  G                                │  detail  (tones, confidence)
 //   │ 82% · simplified from Am7?                │
 //   │                                           │
-//   │ G → C → Am → F                            │  status  (history, mic, lag; captures input)
+//   │ G 12s · C 8s · Am 5s · F 2s               │  status  (last 4 chords + age, mic, lag; captures input)
 //   │ glasses mic · ~1.1 s behind · tap=pause   │
 //   └───────────────────────────────────────────┘
 import {

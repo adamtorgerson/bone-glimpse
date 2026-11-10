@@ -56,7 +56,8 @@ let source: PcmSource | undefined;
 let recording: Float32Array[] = [];
 let recordedSamples = 0;
 let events: DetectionEvent[] = [];
-let history: string[] = [];
+/** Chords in the order they appeared (newest last), with when they first appeared (performance.now()). */
+let history: { display: string; at: number }[] = [];
 let lastEventAt = 0;
 let shown: Chord | undefined;
 let reference: LabSegment[] | undefined;
@@ -230,11 +231,11 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
   ui.confText.textContent = `${Math.round(d.confidence * 100)}% sure`;
   ui.confBar.style.width = `${Math.round(d.confidence * 100)}%`;
   ui.tones.textContent = spellChord(d.chord).join('  ');
-  if (d.level !== 'uncertain' && history[history.length - 1] !== d.display) {
-    history.push(d.display);
+  if (d.level !== 'uncertain' && history[history.length - 1]?.display !== d.display) {
+    history.push({ display: d.display, at: performance.now() });
     if (history.length > 8) history.shift();
-    ui.history.textContent = history.slice(0, -1).join(' → ');
   }
+  renderHistory();
 
   ui.sCompute.textContent = `${event.computeMs.toFixed(0)} ms (median ${median(computeTimes).toFixed(0)}) · ${BACKEND_LABELS[backend]}`;
   ui.sDelay.textContent = `${delay.toFixed(2)} s (median ${median(delays).toFixed(2)}) excl. mic/BLE`;
@@ -248,13 +249,33 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
     const note = d.level === 'simplified' ? ` · maybe ${d.best.display}` : d.level === 'uncertain' ? ' · unsure' : '';
     glasses.set('chord', d.level === 'uncertain' ? `${d.display}?` : d.display, LEVEL_BRIGHTNESS[d.level]);
     glasses.set('detail', `${tones}\n${Math.round(d.confidence * 10) * 10}%${note}`, 2);
-    glasses.set('status', `${history.slice(-5).join(' → ')}\n${statusLine(median(delays))}`, 2);
   }
 
   if (reference) {
     labelScore.add(referenceAt(reference, event.frameTime), d.chord);
     ui.sLabel.textContent = `${pct(labelScore.get('majmin'))} majmin · ${pct(labelScore.get('exact'))} exact`;
   }
+};
+
+const ago = (ms: number): string => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}`;
+};
+
+/** The 4 chords before the current one, oldest first, each with how long ago it first appeared. */
+const historyLine = (): string => {
+  const now = performance.now();
+  return history
+    .slice(-5, -1)
+    .map((h) => `${h.display} ${ago(now - h.at)}`)
+    .join(' · ');
+};
+
+/** Redraws the history in the preview and on the glasses (whole seconds, so the glasses update at most 1x/s). */
+const renderHistory = (): void => {
+  const line = historyLine();
+  ui.history.textContent = line;
+  glasses?.set('status', `${line}\n${statusLine(median(delays))}`, 2);
 };
 
 const statusLine = (delay?: number): string => {
@@ -267,6 +288,7 @@ const statusLine = (delay?: number): string => {
 const onTick = (): void => {
   const heard = recordedSamples / 16000;
   ui.sAudio.textContent = `${heard.toFixed(1)} s`;
+  if (history.length > 1) renderHistory(); // keep the "ago" times ticking between chord changes
   if (lastEventAt && performance.now() - lastEventAt > 2000) {
     ui.chord.classList.add('stale');
     if (glasses && performance.now() - lastEventAt > 3000) glasses.set('chord', ui.chord.textContent ?? ' ', 1);

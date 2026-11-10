@@ -9,6 +9,7 @@ import { ChordPredictor, type ChordPrediction, chordId } from '../engine/predict
 import { type LabSegment, majmin, parseLab, referenceAt, Score } from '../engine/evaluate';
 import { LiveNoteDetector, type NoteReading } from '../engine/note';
 import { FRAME_SECONDS } from '../engine/model';
+import { isSchemeId, SCHEME_IDS, SCHEME_LABELS, type SchemeId } from '../engine/scheme';
 import { type Chord, displayName, spellChord } from '../engine/theory';
 import { encodeWav16 } from '../engine/wav';
 import { detectEvenBridge } from '../even/bridge';
@@ -41,6 +42,7 @@ const ui = {
   full: $<HTMLInputElement>('full'),
   family: $<HTMLInputElement>('family'),
   backend: $<HTMLSelectElement>('backend'),
+  scheme: $<HTMLSelectElement>('scheme'),
   meter: $('meter'),
   stats: document.querySelector<HTMLElement>('.stats')!,
   sAudio: $('s-audio'),
@@ -54,9 +56,12 @@ const ui = {
 };
 
 // ?debug logs detections to the console; ?autostart starts as soon as the model is ready;
-// ?backend=webgpu picks the inference backend.
+// ?backend=webgpu picks the inference backend; ?scheme=chroma|essentia|basicpitch picks
+// the detection scheme (default chordmini).
 const params = new URLSearchParams(location.search);
 const debug = params.has('debug');
+const schemeParam = params.get('scheme');
+let scheme: SchemeId = isSchemeId(schemeParam) ? schemeParam : 'chordmini';
 
 let ready = false;
 let source: PcmSource | undefined;
@@ -124,6 +129,12 @@ const options = (): DetectorOptions => ({
 // One worker per inference backend; only the active one analyses, the other
 // stays loaded on standby (and keeps its audio history current).
 const workers = new Map<Backend, Worker>();
+/**
+ * Session time (s) at which each worker's audio stream began. A worker sees
+ * time 0 at its first audio chunk; one started mid-session (scheme switch,
+ * late WebGPU preload) is offset so its detections use session time.
+ */
+const workerEpoch = new Map<Backend, number>();
 /** Sends to every loaded worker (options, resets, audio). */
 const send = (msg: ToWorker): void => {
   for (const w of workers.values()) {
@@ -168,7 +179,7 @@ const setBackendState = (backend: Backend, state: BackendState, note?: string): 
 };
 
 const describeBackend = (b: Backend = activeBackend): string =>
-  `${BACKEND_LABELS[b]} · ${backendThreads[b]} thread${backendThreads[b] === 1 ? '' : 's'}`;
+  `${SCHEME_LABELS[scheme]} · ${BACKEND_LABELS[b]} · ${backendThreads[b]} thread${backendThreads[b] === 1 ? '' : 's'}`;
 
 /** Makes `backend` the analysing worker; the other goes on standby. Listening continues. */
 const activateBackend = (backend: Backend): void => {
@@ -191,6 +202,7 @@ const startWorker = (backend: Backend, active: boolean): void => {
   setBackendState(backend, 'loading');
   const worker = new Worker(new URL('./detector.worker.ts', import.meta.url), { type: 'module', name: `detector-${backend}` });
   workers.set(backend, worker);
+  workerEpoch.set(backend, source ? recordedSamples / 16000 : 0);
   worker.onmessage = (e: MessageEvent<FromWorker>) => {
     const msg = e.data;
     if (msg.type === 'ready') {
@@ -211,7 +223,10 @@ const startWorker = (backend: Backend, active: boolean): void => {
         setStatus(`${BACKEND_LABELS[backend]} unavailable (${msg.error}) · using ${describeBackend()}`, true);
       }
     } else if (msg.type === 'detection') {
-      if (msg.backend === activeBackend) onDetection(msg.event, msg.backend);
+      if (msg.backend === activeBackend) {
+        const epoch = workerEpoch.get(backend) ?? 0;
+        onDetection({ ...msg.event, frameTime: msg.event.frameTime + epoch, audioTime: msg.event.audioTime + epoch }, msg.backend);
+      }
     } else {
       if (debug) console.error(`[error] ${backend}: ${msg.message}`);
       setStatus(`Error (${BACKEND_LABELS[backend]}): ${msg.message}`, true);
@@ -221,10 +236,11 @@ const startWorker = (backend: Backend, active: boolean): void => {
   worker.onerror = (e) => setStatus(`Worker error (${BACKEND_LABELS[backend]}): ${e.message}`, true);
   worker.postMessage({
     type: 'init',
+    scheme,
     backend,
     active,
     options: options(),
-    modelBase: new URL('models/chordmini/', document.baseURI).href,
+    modelsBase: new URL('models/', document.baseURI).href,
   } satisfies ToWorker);
 };
 
@@ -233,10 +249,11 @@ const onAppReady = (loadMs: number): void => {
   ui.start.disabled = !!source;
   // Glasses autostart is for the Even mics only: a file/mic source needs a tap to unlock audio.
   if ((params.has('autostart') || (glassesAutostart && isEvenSource(ui.source.value))) && !source) void start();
-  glasses?.set('detail', 'ready · tap to listen', 2);
-  setStatus(`Model ready · ${describeBackend('wasm')} · loaded in ${(loadMs / 1000).toFixed(1)} s`);
+  if (!source) glasses?.set('detail', 'ready · tap to listen', 2);
+  setStatus(`${source ? `Listening: ${source.name}` : 'Model ready'} · ${describeBackend('wasm')} · loaded in ${(loadMs / 1000).toFixed(1)} s`);
   // Preload WebGPU only after WASM is up, so the first load isn't slowed down.
-  if ('gpu' in navigator) startWorker('webgpu', false);
+  if (scheme !== 'chordmini') setBackendState('webgpu', 'unavailable', 'only the ChordMini scheme runs on WebGPU');
+  else if ('gpu' in navigator) startWorker('webgpu', false);
   // navigator.gpu only exists in secure contexts (HTTPS or localhost).
   else setBackendState('webgpu', 'unavailable', isSecureContext ? 'this browser has no WebGPU' : 'WebGPU needs HTTPS (page is not a secure context)');
 };
@@ -439,6 +456,7 @@ const start = async (): Promise<void> => {
   ui.chord.textContent = '…';
   ui.chord.className = 'g2-chord';
   send({ type: 'reset' });
+  for (const b of workers.keys()) workerEpoch.set(b, 0);
   send({ type: 'options', options: options() });
 
   if (isEvenSource(ui.source.value)) {
@@ -487,6 +505,7 @@ const stop = async (): Promise<void> => {
   source = undefined;
   await stopping?.stop();
   send({ type: 'reset' });
+  for (const b of workers.keys()) workerEpoch.set(b, 0);
   window.clearInterval(tick);
   ui.start.disabled = !ready;
   ui.stop.disabled = true;
@@ -584,6 +603,7 @@ const download = (): void => {
       {
         createdAt: new Date().toISOString(),
         source: ui.source.value,
+        scheme,
         backend: activeBackend,
         options: options(),
         userAgent: navigator.userAgent,
@@ -636,6 +656,28 @@ for (const input of [ui.lookahead, ui.step, ui.full, ui.family]) {
 }
 // Both backends stay loaded: switching keeps listening and reloads nothing.
 ui.backend.addEventListener('change', () => activateBackend(ui.backend.value as Backend));
+// A scheme switch replaces the workers; listening continues and the new
+// worker buffers audio while it loads.
+const switchScheme = (next: SchemeId): void => {
+  if (next === scheme) return;
+  scheme = next;
+  const url = new URL(location.href);
+  url.searchParams.set('scheme', next);
+  window.history.replaceState(null, '', url);
+  for (const w of workers.values()) w.terminate();
+  workers.clear();
+  workerEpoch.clear();
+  activeBackend = 'wasm';
+  wantedBackend = 'wasm';
+  ui.backend.value = 'wasm';
+  computeTimes = [];
+  setBackendState('webgpu', 'loading');
+  setStatus(`Loading ${SCHEME_LABELS[next]}…`);
+  startWorker('wasm', true);
+};
+ui.scheme.replaceChildren(...SCHEME_IDS.map((id) => new Option(SCHEME_LABELS[id], id)));
+ui.scheme.value = scheme;
+ui.scheme.addEventListener('change', () => switchScheme(ui.scheme.value as SchemeId));
 ui.start.addEventListener('click', () => void start());
 ui.stop.addEventListener('click', () => void stop());
 ui.download.addEventListener('click', download);

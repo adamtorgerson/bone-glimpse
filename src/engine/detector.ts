@@ -1,16 +1,15 @@
 // Streaming chord detection. Audio comes in as 16 kHz mono PCM chunks (the
 // format the Even G2 SDK delivers from the glasses or phone mic), is
-// resampled to the model rate, and every `stepFrames` a 108-frame window
-// ending at the newest audio is analysed. The chord reported is the one for
-// frame (end - lookahead): more lookahead = more right-hand context = better
-// accuracy, but the display lags by lookahead * ~93 ms.
-import { computeCqt, type CqtPlan } from './cqt';
-import { decide, type Decision, type DecisionOptions, defaultDecisionOptions, smoothedLogits, softmax } from './decision';
-import { type ChordModel, HOP, N_BINS, N_CLASSES, SAMPLE_RATE, SEQ_LEN, type Vocabulary } from './model';
+// resampled to the model rate, and every `stepFrames` the selected scheme
+// analyses a window ending at the newest audio. The chord reported is the one
+// for frame (end - lookahead): more lookahead = more right-hand context =
+// better accuracy, but the display lags by lookahead * ~93 ms.
+import { decide, type Decision, type DecisionOptions, defaultDecisionOptions } from './decision';
+import { HOP, SAMPLE_RATE, type Vocabulary } from './model';
 import { StreamResampler } from './resample';
+import { type ChordScheme } from './scheme';
 
-/** Extra frames computed on the left of each window so CQT edge effects are discarded. */
-export const CQT_MARGIN_FRAMES = 16;
+export { buildWindow, CQT_MARGIN_FRAMES, WINDOW_HISTORY_SAMPLES } from './schemes/chordmini';
 
 export const DEVICE_SAMPLE_RATE = 16000; // Even G2 audioEvent: PCM s16le, 16 kHz, mono
 
@@ -59,33 +58,6 @@ export class AudioHistory {
   }
 }
 
-/** Samples of history needed to build a window. */
-export const WINDOW_HISTORY_SAMPLES = (SEQ_LEN + CQT_MARGIN_FRAMES + 2) * HOP;
-
-/**
- * Builds the [SEQ_LEN][N_BINS] feature window whose last frame is `endFrame`,
- * using only audio before `availableEnd` (absolute model-rate samples). Frames
- * near the right edge see zeros for the not-yet-heard future, exactly like a
- * live system would.
- */
-export const buildWindow = (
-  read: (from: number, to: number) => Float32Array,
-  endFrame: number,
-  availableEnd: number,
-  plan: CqtPlan,
-): Float32Array => {
-  const firstFrame = endFrame - (SEQ_LEN - 1);
-  const segmentFrame = firstFrame - CQT_MARGIN_FRAMES;
-  const segmentStart = segmentFrame * HOP; // may be negative: zeros before the stream starts
-  const segment = read(segmentStart, availableEnd);
-  const { frameCount, data } = computeCqt(segment, plan);
-  const window = new Float32Array(SEQ_LEN * N_BINS);
-  const offset = CQT_MARGIN_FRAMES;
-  if (frameCount < offset + SEQ_LEN) throw new RangeError('Not enough audio for the requested window');
-  window.set(data.subarray(offset * N_BINS, (offset + SEQ_LEN) * N_BINS));
-  return window;
-};
-
 export type DetectionEvent = {
   /** Absolute frame the decision describes, and its time from stream start (s). */
   frame: number;
@@ -114,17 +86,20 @@ export const defaultDetectorOptions: DetectorOptions = {
 export class LiveChordDetector {
   options: DetectorOptions;
   private readonly resampler = new StreamResampler(DEVICE_SAMPLE_RATE, SAMPLE_RATE);
-  private readonly history = new AudioHistory(WINDOW_HISTORY_SAMPLES + SAMPLE_RATE);
+  private readonly history: AudioHistory;
   private lastEndFrame = -Infinity;
   private busy = false;
 
   constructor(
-    private readonly model: ChordModel,
-    readonly plan: CqtPlan,
-    readonly vocab: Vocabulary,
+    readonly scheme: ChordScheme,
     options: Partial<DetectorOptions> = {},
   ) {
     this.options = { ...defaultDetectorOptions, ...options };
+    this.history = new AudioHistory(scheme.historySamples + SAMPLE_RATE);
+  }
+
+  get vocab(): Vocabulary {
+    return this.scheme.vocab;
   }
 
   /** Seconds of device audio received so far (at model rate). */
@@ -145,12 +120,11 @@ export class LiveChordDetector {
     this.busy = true;
     try {
       const started = now();
-      const window = buildWindow((a, b) => this.history.read(a, b), endFrame, available, this.plan);
-      const batch = new Float32Array(this.model.batch * SEQ_LEN * N_BINS);
-      batch.set(window);
-      const logits = await this.model.run(batch);
-      const local = SEQ_LEN - 1 - this.options.lookaheadFrames;
-      const probs = softmax(smoothedLogits(logits.subarray(0, SEQ_LEN * N_CLASSES), local, SEQ_LEN));
+      const [[probs]] = await this.scheme.analyzeWindows(
+        (a, b) => this.history.read(a, b),
+        [{ endFrame, availableEnd: available }],
+        [this.options.lookaheadFrames],
+      );
       const decision = decide(probs, this.vocab, this.options.decision);
       const computeMs = now() - started;
       this.lastEndFrame = endFrame;

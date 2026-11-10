@@ -1,15 +1,15 @@
-// Runs CQT + model for one inference backend, off the UI thread. Audio chunks
+// Runs the selected chord detection scheme for one inference backend, off the UI thread. Audio chunks
 // arrive as 16 kHz floats; while active, the detector is polled after each
 // chunk and results are posted back. While on standby the worker only keeps
 // the audio history up to date, so it can take over without a gap.
 import { LiveChordDetector } from '../engine/detector';
-import { createSession, loadWebAssets, webGpuAvailable, WebModel } from './ort-model';
+import { webGpuAvailable } from './ort-model';
 import { type Backend, type FromWorker, type ToWorker } from './protocol';
+import { loadWebScheme } from './schemes';
 
 let backend: Backend = 'wasm';
 let active = false;
 let detector: LiveChordDetector | undefined;
-let loaded: WebModel | undefined;
 const post = (message: FromWorker): void => self.postMessage(message);
 
 let scheduled = false;
@@ -53,11 +53,10 @@ self.onmessage = async (e: MessageEvent<ToWorker>): Promise<void> => {
         const started = performance.now();
         try {
           if (backend === 'webgpu' && !webGpuAvailable()) throw new Error('this browser has no WebGPU');
-          const assets = await loadWebAssets(msg.modelBase, backend);
-          loaded = new WebModel(await createSession(assets.modelBytes, backend));
-          detector = new LiveChordDetector(loaded, assets.plan, assets.vocab, msg.options);
+          const { scheme, threads } = await loadWebScheme(msg.scheme, msg.modelsBase, backend);
+          detector = new LiveChordDetector(scheme, msg.options);
           for (const chunk of early.splice(0)) detector.pushDeviceAudio(chunk);
-          post({ type: 'ready', backend, threads: assets.threads, loadMs: performance.now() - started });
+          post({ type: 'ready', backend, threads, loadMs: performance.now() - started });
           schedule();
         } catch (error) {
           post({ type: 'unavailable', backend, error: error instanceof Error ? error.message : String(error) });
@@ -73,10 +72,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>): Promise<void> => {
         break;
       case 'reset':
         early.length = 0;
-        if (loaded && detector) {
-          const { options } = detector;
-          detector = new LiveChordDetector(loaded, detector.plan, detector.vocab, options);
-        }
+        if (detector) detector = new LiveChordDetector(detector.scheme, detector.options);
         break;
       case 'audio':
         if (detector) detector.pushDeviceAudio(msg.pcm);

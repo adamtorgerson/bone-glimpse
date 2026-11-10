@@ -9,7 +9,7 @@ const BATCH = 16; // the shipped export is static at 16 windows per run
 
 export type WebAssets = { modelBytes: Uint8Array; plan: CqtPlan; vocab: Vocabulary; threads: number };
 
-const fetchBytes = async (base: string, name: string): Promise<Uint8Array> => {
+export const fetchBytes = async (base: string, name: string): Promise<Uint8Array> => {
   const response = await fetch(new URL(name, base));
   if (!response.ok) throw new Error(`${name}: HTTP ${response.status} (did you run "npm run setup"?)`);
   return new Uint8Array(await response.arrayBuffer());

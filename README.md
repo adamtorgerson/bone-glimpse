@@ -9,7 +9,7 @@ G2-sized preview.
 
 ```sh
 npm install
-npm run setup      # downloads + SHA-256-verifies the ChordMini model (17 MB) into public/models
+npm run setup      # downloads + SHA-256-verifies ChordMini (17 MB) and Basic Pitch (1 MB) into public/models
 npm run dev        # http://localhost:5180 (also on your LAN, for the phone)
 ```
 
@@ -68,7 +68,10 @@ The phone-side page shows the same information plus the tuning controls and stat
   detected with a 2.5 s timeout, in parallel with model loading.
 
 URL flags: `?debug` logs detections to the console, `?autostart` starts as soon
-as the model loads, and `?backend=webgpu` uses WebGPU for inference.
+as the model loads, `?backend=webgpu` uses WebGPU for inference, and
+`?scheme=chroma|essentia|basicpitch` picks the detection scheme (default
+`chordmini`). The **Detection scheme** selector does the same while you listen:
+switching replaces the detector worker and keeps listening.
 
 ## Measuring accuracy (no browser needed)
 
@@ -76,6 +79,7 @@ as the model loads, and `?backend=webgpu` uses WebGPU for inference.
 npm run synth                          # makes test-audio/synth/*.wav + .lab (exact ground truth)
 npm run eval -- test-audio/synth       # or any folder of .wav files with sibling .lab files
 npm run eval -- song.wav --lookaheads 0,2,4,8 --step 2 --json report.json
+npm run eval -- test-audio/synth --scheme all            # or e.g. --scheme chroma,basicpitch
 ```
 
 Audio goes through the glasses path (mono, then 16 kHz, then 16-bit, then 22.05 kHz).
@@ -92,14 +96,53 @@ For each lookahead the harness reports:
 170-class vocabulary. Reference `.lab` files use Harte syntax, as in the
 Isophonics or Billboard annotations.
 
+## Detection schemes
+
+Every scheme outputs probabilities over the same 170 chord classes on the same
+93 ms frame grid, so the decision and fallback rules, scoring, key, prediction
+and display are shared (`src/engine/scheme.ts`).
+
+| scheme | how | live cost (laptop) |
+|---|---|---|
+| `chordmini` | CQT → 108-frame transformer (ONNX), the default | ~114 ms/window (batched), ~0.7 s live in Chrome (batch-16 export) |
+| `chroma` | the same CQT folded into treble and bass chroma → binary chord templates → sticky HMM (forward-backward over the last ~2.2 s) | ~30 ms, no model |
+| `essentia` | essentia.js HPCP → `ChordsDetection` (major/minor only, ~2 s centred window) | ~15–40 ms |
+| `basicpitch` | Spotify Basic Pitch note transcription (tfjs, WASM backend) → pitch classes of the notes → same templates and HMM as `chroma` | ~150 ms/window in Node, ~250 ms in Chrome |
+
+Synthetic set (`npm run synth`, 4 songs; `--scheme all --lookaheads 0,2,4,8`):
+
+| scheme | offline majmin | offline exact | screen majmin @0 / 2 / 4 / 8 | median lag @0 / 2 / 4 / 8 |
+|---|---|---|---|---|
+| chordmini | 96.6% | 90.2% | 83.1 / 80.3 / 76.6 / 65.1% | 0.37 / 0.46 / 0.58 / 0.88 s |
+| chroma | 97.3% | 92.3% | 91.0 / 89.4 / 83.1 / 69.2% | 0.19 / 0.23 / 0.42 / 0.79 s |
+| essentia | 90.0% | 56.9% | 79.9 / 75.4 / 72.6 / 65.1% | 0.51 / 0.65 / 0.70 / 0.88 s |
+| basicpitch | 97.7% | 97.0% | 88.0 / 88.6 / 82.0 / 68.3% | 0.19 / 0.28 / 0.44 / 0.84 s |
+
+Treat these with care. The synth songs are perfectly tuned, clean and
+generated from the same chord vocabulary, and the chroma settings were tuned on
+them, so they flatter the template schemes. Real recordings will decide it.
+
+* `essentia` only knows the 24 major/minor triads, so its exact score is
+  capped by how many 7ths a song has. Its "confidence" is the template
+  correlation, not a probability.
+* `chroma` reads only the on-pitch CQT bins (24 bins per octave). Folding in
+  the quarter-tone bins smeared the root into the semitone below and turned most
+  triads into maj7 (exact accuracy 15% → 92%). A recording tuned far from
+  A440 (around a quarter tone off) will suffer. Tuning estimation is the obvious next step.
+* `basicpitch` runs tfjs single-threaded in the browser: tfjs's threaded WASM
+  build spawns workers from an inlined script that breaks once Vite bundles it.
+* Only `chordmini` can use WebGPU. The other schemes run on WASM/JS, and their
+  libraries are lazy-loaded chunks that are fetched only when selected.
+
 ## How it works
 
 ```
 mic / file / (later) Even G2 audioEvent
   → 16 kHz s16 mono chunks            src/audio/*        (device-specific)
   → resample to 22.05 kHz             src/engine/resample.ts
-  → CQT (librosa-equivalent)          src/engine/cqt.ts
-  → 108-frame window → ChordMini      src/engine/detector.ts, model.ts
+  → chord scheme (selectable)         src/engine/detector.ts, scheme.ts, schemes/*
+      ChordMini: CQT → 108-frame window → transformer
+      chroma / Basic Pitch / Essentia: see "Detection schemes"
   → smoothing + confidence fallback   src/engine/decision.ts
   → display                           src/web/*          (device-specific)
 ```
@@ -169,3 +212,10 @@ mic / file / (later) Even G2 audioEvent
 Model: ChordMini (ptnghia-j, MIT), ONNX export and CQT plan
 musetric/chordmini-onnx (MIT). CQT plan format ported from musetric
 `packages/cqt` (MIT).
+
+Basic Pitch model: Spotify (Apache-2.0), run with TensorFlow.js (Apache-2.0).
+
+Essentia scheme: essentia.js (MTG-UPF), **AGPL-3.0**. The scheme is loaded
+on demand, but `npm run build` / `npm run pack` still bundle it into the app.
+Distributing that build (e.g. uploading the `.ehpk`) puts it under the AGPL.
+Drop the scheme from a release build if that's not acceptable.

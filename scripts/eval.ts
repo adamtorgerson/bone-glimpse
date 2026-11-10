@@ -1,8 +1,11 @@
 // Laptop evaluation harness for live chord detection.
 //
-//   npm run eval -- <file.wav | dir> [...] [--lookaheads 0,2,4,8,16] [--step 2]
-//                  [--threads 4] [--json report.json] [--full-threshold 0.5]
-//                  [--family-threshold 0.5]
+//   npm run eval -- <file.wav | dir> [...] [--scheme chordmini|chroma|essentia|basicpitch|all]
+//                  [--lookaheads 0,2,4,8,16] [--step 2] [--threads 4] [--json report.json]
+//                  [--full-threshold 0.5] [--family-threshold 0.5]
+//
+// --scheme takes one detection scheme, a comma-separated list or "all"; with
+// several, each is run in turn and a side-by-side summary is printed.
 //
 // Each audio file needs a sibling .lab (same basename) with reference chords.
 // Audio is put through the same path as the glasses: downmix -> 16 kHz ->
@@ -21,13 +24,15 @@ import { changeLags, type LabSegment, median, parseLab, referenceAt, Score } fro
 import { FRAME_SECONDS, HOP, SAMPLE_RATE } from '../src/engine/model';
 import { analyzeFullSong, simulateStreaming } from '../src/engine/offline';
 import { resampleAll } from '../src/engine/resample';
+import { isSchemeId, SCHEME_IDS, SCHEME_LABELS, type SchemeId } from '../src/engine/scheme';
 import { type Chord } from '../src/engine/theory';
 import { decodeWav, quantize16, toMono } from '../src/engine/wav';
-import { loadNodeModel } from './lib/node-model';
+import { loadNodeScheme } from './lib/node-model';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
+    scheme: { type: 'string', default: 'chordmini' },
     lookaheads: { type: 'string', default: '0,2,4,8,16' },
     step: { type: 'string', default: '2' },
     threads: { type: 'string', default: '4' },
@@ -37,6 +42,13 @@ const { values, positionals } = parseArgs({
   },
 });
 
+const schemeIds: SchemeId[] = values.scheme === 'all' ? [...SCHEME_IDS] : values.scheme.split(',').map((s) => s.trim()).filter(Boolean) as SchemeId[];
+for (const id of schemeIds) {
+  if (!isSchemeId(id)) {
+    console.error(`unknown scheme "${id}" (choose from ${SCHEME_IDS.join(', ')}, or all)`);
+    process.exit(1);
+  }
+}
 const lookaheads = values.lookaheads.split(',').map(Number);
 const stepFrames = Number(values.step);
 const decisionOptions = {
@@ -57,13 +69,15 @@ if (!files.length) {
   process.exit(1);
 }
 
-const { model, plan, vocab } = await loadNodeModel(Number(values.threads));
-
-type Row = { name: string; offline: Score; offlineRaw: Score; streams: { label: Score; screen: Score; lags: number[]; missed: number; scored: number; levels: Record<string, number> }[] };
-const rows: Row[] = [];
+type Row = { name: string; offline: Score; offlineRaw: Score; streams: { label: Score; screen: Score; lags: number[]; missed: number; scored: number; levels: Record<string, number> }[]; msPerWindow: number };
+type SchemeResult = { id: SchemeId; rows: Row[] };
+const results: SchemeResult[] = [];
 const fmt = (v: number): string => (Number.isNaN(v) ? '  -  ' : `${(v * 100).toFixed(1).padStart(5)}%`);
 const sec = (v: number): string => (Number.isNaN(v) ? '  -  ' : `${v.toFixed(2)}s`);
+const mean = (rows: Row[], f: (r: Row) => number): number => rows.reduce((a, r) => a + f(r), 0) / rows.length;
 
+type Song = { file: string; segments: LabSegment[]; audio: Float32Array; seconds: number };
+const songs: Song[] = [];
 for (const file of files) {
   const labPath = file.replace(/\.wav$/i, '.lab');
   if (!existsSync(labPath)) {
@@ -74,73 +88,103 @@ for (const file of files) {
   const decoded = decodeWav(new Uint8Array(readFileSync(file)));
   const device = quantize16(resampleAll(toMono(decoded), decoded.sampleRate, 16000));
   const audio = resampleAll(device, 16000, SAMPLE_RATE);
-  const seconds = audio.length / SAMPLE_RATE;
-  process.stdout.write(`\n${basename(file)} (${seconds.toFixed(0)} s)\n  offline ... `);
-
-  let t0 = performance.now();
-  const full = await analyzeFullSong(audio, model, plan, vocab, decisionOptions);
-  const offline = new Score();
-  const offlineRaw = new Score();
-  full.forEach((d, f) => {
-    const ref = referenceAt(segments, f * FRAME_SECONDS);
-    offline.add(ref, d.chord);
-    offlineRaw.add(ref, vocab.chords[vocab.labels.indexOf(d.best.label)]);
-  });
-  console.log(`${((performance.now() - t0) / 1000).toFixed(1)} s`);
-
-  t0 = performance.now();
-  const steps = await simulateStreaming(audio, model, plan, vocab, { stepFrames, lookaheads, decision: decisionOptions }, (done, total) => {
-    if (process.stdout.isTTY) process.stdout.write(`\r  streaming ... ${done}/${total} windows`);
-  });
-  if (!process.stdout.isTTY) process.stdout.write('  streaming ...');
-  const elapsed = (performance.now() - t0) / 1000;
-  console.log(` (${elapsed.toFixed(1)} s, ${((elapsed / steps.length) * 1000).toFixed(0)} ms/window incl. batching)`);
-
-  const streams = lookaheads.map((l, li) => {
-    const label = new Score();
-    const screen = new Score();
-    const levels: Record<string, number> = { full: 0, simplified: 0, uncertain: 0, none: 0 };
-    for (const step of steps) {
-      const d = step.decisions[li];
-      label.add(referenceAt(segments, (step.endFrame - l) * FRAME_SECONDS), d.chord);
-      levels[d.level]++;
-    }
-    // On screen at time t: the newest result whose audio had been heard by t.
-    const shownAt = (t: number): Chord | undefined => {
-      const frameNow = Math.floor((t * SAMPLE_RATE - 1) / HOP);
-      const idx = Math.floor(frameNow / stepFrames) - 1; // steps[k].endFrame = (k+1)*stepFrames
-      return idx >= 0 && idx < steps.length ? steps[idx].decisions[li].chord : undefined;
-    };
-    for (let t = 0; t < seconds; t += FRAME_SECONDS) {
-      const shown = shownAt(t);
-      if (shown) screen.add(referenceAt(segments, t), shown);
-    }
-    const { lags, missed, scored } = changeLags(segments, shownAt, FRAME_SECONDS / 2);
-    return { label, screen, lags, missed, scored, levels };
-  });
-  rows.push({ name: basename(file), offline, offlineRaw, streams });
-
-  console.log(`  offline (whole song): root ${fmt(offline.get('root'))}  majmin ${fmt(offline.get('majmin'))}  exact ${fmt(offline.get('exact'))}  (raw argmax exact ${fmt(offlineRaw.get('exact'))})`);
-  console.log('  lookahead      | label acc: root  majmin  exact | screen acc: majmin | change lag (median) | shown as full/simpl/uncertain');
-  lookaheads.forEach((l, li) => {
-    const s = streams[li];
-    const n = steps.length;
-    console.log(
-      `  ${String(l).padStart(2)} fr (${(l * FRAME_SECONDS).toFixed(2)}s) |  ${fmt(s.label.get('root'))} ${fmt(s.label.get('majmin'))} ${fmt(s.label.get('exact'))} |   ${fmt(s.screen.get('majmin'))}         | ${sec(median(s.lags))} (missed ${s.missed}/${s.scored}) | ${[s.levels.full, s.levels.simplified, s.levels.uncertain].map((v) => `${Math.round((v / n) * 100)}%`).join('/')}`,
-    );
-  });
+  songs.push({ file, segments, audio, seconds: audio.length / SAMPLE_RATE });
 }
 
-if (rows.length > 1) {
-  console.log(`\nMEAN over ${rows.length} files`);
-  const mean = (f: (r: Row) => number): number => rows.reduce((a, r) => a + f(r), 0) / rows.length;
-  console.log(`  offline: root ${fmt(mean((r) => r.offline.get('root')))}  majmin ${fmt(mean((r) => r.offline.get('majmin')))}  exact ${fmt(mean((r) => r.offline.get('exact')))}`);
-  lookaheads.forEach((l, li) => {
-    const lags = rows.flatMap((r) => r.streams[li].lags);
-    console.log(
-      `  ${String(l).padStart(2)} fr (${(l * FRAME_SECONDS).toFixed(2)}s): label majmin ${fmt(mean((r) => r.streams[li].label.get('majmin')))} exact ${fmt(mean((r) => r.streams[li].label.get('exact')))} | screen majmin ${fmt(mean((r) => r.streams[li].screen.get('majmin')))} | lag ${sec(median(lags))}`,
-    );
-  });
+for (const schemeId of schemeIds) {
+  const scheme = await loadNodeScheme(schemeId, Number(values.threads));
+  const { vocab } = scheme;
+  const rows: Row[] = [];
+  results.push({ id: schemeId, rows });
+  console.log(`\n=== scheme: ${schemeId} (${SCHEME_LABELS[schemeId]}) ===`);
+
+  for (const { file, segments, audio, seconds } of songs) {
+    process.stdout.write(`\n${basename(file)} (${seconds.toFixed(0)} s)\n  offline ... `);
+
+    let t0 = performance.now();
+    const full = await analyzeFullSong(audio, scheme, decisionOptions);
+    const offline = new Score();
+    const offlineRaw = new Score();
+    full.forEach((d, f) => {
+      const ref = referenceAt(segments, f * FRAME_SECONDS);
+      offline.add(ref, d.chord);
+      offlineRaw.add(ref, vocab.chords[vocab.labels.indexOf(d.best.label)]);
+    });
+    console.log(`${((performance.now() - t0) / 1000).toFixed(1)} s`);
+
+    t0 = performance.now();
+    const steps = await simulateStreaming(audio, scheme, { stepFrames, lookaheads, decision: decisionOptions }, (done, total) => {
+      if (process.stdout.isTTY) process.stdout.write(`\r  streaming ... ${done}/${total} windows`);
+    });
+    if (!process.stdout.isTTY) process.stdout.write('  streaming ...');
+    const elapsed = (performance.now() - t0) / 1000;
+    console.log(` (${elapsed.toFixed(1)} s, ${((elapsed / steps.length) * 1000).toFixed(0)} ms/window incl. batching)`);
+    const msPerWindow = (elapsed / steps.length) * 1000;
+
+    const streams = lookaheads.map((l, li) => {
+      const label = new Score();
+      const screen = new Score();
+      const levels: Record<string, number> = { full: 0, simplified: 0, uncertain: 0, none: 0 };
+      for (const step of steps) {
+        const d = step.decisions[li];
+        label.add(referenceAt(segments, (step.endFrame - l) * FRAME_SECONDS), d.chord);
+        levels[d.level]++;
+      }
+      // On screen at time t: the newest result whose audio had been heard by t.
+      const shownAt = (t: number): Chord | undefined => {
+        const frameNow = Math.floor((t * SAMPLE_RATE - 1) / HOP);
+        const idx = Math.floor(frameNow / stepFrames) - 1; // steps[k].endFrame = (k+1)*stepFrames
+        return idx >= 0 && idx < steps.length ? steps[idx].decisions[li].chord : undefined;
+      };
+      for (let t = 0; t < seconds; t += FRAME_SECONDS) {
+        const shown = shownAt(t);
+        if (shown) screen.add(referenceAt(segments, t), shown);
+      }
+      const { lags, missed, scored } = changeLags(segments, shownAt, FRAME_SECONDS / 2);
+      return { label, screen, lags, missed, scored, levels };
+    });
+    rows.push({ name: basename(file), offline, offlineRaw, streams, msPerWindow });
+
+    console.log(`  offline (whole song): root ${fmt(offline.get('root'))}  majmin ${fmt(offline.get('majmin'))}  exact ${fmt(offline.get('exact'))}  (raw argmax exact ${fmt(offlineRaw.get('exact'))})`);
+    console.log('  lookahead      | label acc: root  majmin  exact | screen acc: majmin | change lag (median) | shown as full/simpl/uncertain');
+    lookaheads.forEach((l, li) => {
+      const s = streams[li];
+      const n = steps.length;
+      console.log(
+        `  ${String(l).padStart(2)} fr (${(l * FRAME_SECONDS).toFixed(2)}s) |  ${fmt(s.label.get('root'))} ${fmt(s.label.get('majmin'))} ${fmt(s.label.get('exact'))} |   ${fmt(s.screen.get('majmin'))}         | ${sec(median(s.lags))} (missed ${s.missed}/${s.scored}) | ${[s.levels.full, s.levels.simplified, s.levels.uncertain].map((v) => `${Math.round((v / n) * 100)}%`).join('/')}`,
+      );
+    });
+  }
+
+  if (rows.length > 1) {
+    console.log(`\nMEAN over ${rows.length} files (${schemeId})`);
+    console.log(`  offline: root ${fmt(mean(rows, (r) => r.offline.get('root')))}  majmin ${fmt(mean(rows, (r) => r.offline.get('majmin')))}  exact ${fmt(mean(rows, (r) => r.offline.get('exact')))}`);
+    lookaheads.forEach((l, li) => {
+      const lags = rows.flatMap((r) => r.streams[li].lags);
+      console.log(
+        `  ${String(l).padStart(2)} fr (${(l * FRAME_SECONDS).toFixed(2)}s): label majmin ${fmt(mean(rows, (r) => r.streams[li].label.get('majmin')))} exact ${fmt(mean(rows, (r) => r.streams[li].label.get('exact')))} | screen majmin ${fmt(mean(rows, (r) => r.streams[li].screen.get('majmin')))} | lag ${sec(median(lags))}`,
+      );
+    });
+  }
+}
+
+if (results.length > 1) {
+  console.log(`\nCOMPARISON (mean over ${songs.length} file${songs.length === 1 ? '' : 's'})`);
+  const header = ['scheme'.padEnd(11), 'offline majmin', ' exact', ...lookaheads.map((l) => `screen@${l}`.padStart(9)), ...lookaheads.map((l) => `lag@${l}`.padStart(7)), 'ms/window'];
+  console.log(`  ${header.join(' ')}`);
+  for (const { id, rows } of results) {
+    if (!rows.length) continue;
+    const cells = [
+      id.padEnd(11),
+      fmt(mean(rows, (r) => r.offline.get('majmin'))).padStart(14),
+      fmt(mean(rows, (r) => r.offline.get('exact'))),
+      ...lookaheads.map((_, li) => fmt(mean(rows, (r) => r.streams[li].screen.get('majmin'))).padStart(9)),
+      ...lookaheads.map((_, li) => sec(median(rows.flatMap((r) => r.streams[li].lags))).padStart(7)),
+      mean(rows, (r) => r.msPerWindow).toFixed(0).padStart(9),
+    ];
+    console.log(`  ${cells.join(' ')}`);
+  }
+  console.log('  (screen@N = on-screen majmin accuracy at lookahead N frames; lag@N = median change lag)');
 }
 
 if (values.json) {
@@ -152,10 +196,14 @@ if (values.json) {
         stepFrames,
         lookaheads,
         decisionOptions,
-        files: rows.map((r) => ({
-          name: r.name,
-          offline: toObj(r.offline),
-          streams: r.streams.map((s, i) => ({ lookahead: lookaheads[i], label: toObj(s.label), screen: toObj(s.screen), medianLag: median(s.lags), missed: s.missed, scored: s.scored, levels: s.levels })),
+        schemes: results.map(({ id, rows }) => ({
+          scheme: id,
+          files: rows.map((r) => ({
+            name: r.name,
+            offline: toObj(r.offline),
+            msPerWindow: r.msPerWindow,
+            streams: r.streams.map((s, i) => ({ lookahead: lookaheads[i], label: toObj(s.label), screen: toObj(s.screen), medianLag: median(s.lags), missed: s.missed, scored: s.scored, levels: s.levels })),
+          })),
         })),
       },
       null,

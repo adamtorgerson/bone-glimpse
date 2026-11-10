@@ -6,6 +6,7 @@ import { LiveChordDetector } from '../src/engine/detector';
 import { majmin, parseLab, referenceAt } from '../src/engine/evaluate';
 import { type ChordModel, loadVocabulary, type ModelConfig, N_BINS, N_CLASSES, SEQ_LEN } from '../src/engine/model';
 import { simulateStreaming } from '../src/engine/offline';
+import { ChordMiniScheme } from '../src/engine/schemes/chordmini';
 import { resampleAll, StreamResampler } from '../src/engine/resample';
 import { chordTones, displayName, parseChord, simplify, spellChord, toVocabLabel } from '../src/engine/theory';
 
@@ -135,7 +136,7 @@ describe('live detector', () => {
     const device = Float32Array.from({ length: 16000 * seconds }, (_, i) =>
       0.3 * Math.sin((2 * Math.PI * 220 * i) / 16000) + 0.2 * Math.sin((2 * Math.PI * (i < 112000 ? 330 : 349) * i) / 16000),
     );
-    const live = new LiveChordDetector(fakeModel, plan, vocab, { lookaheadFrames: 3, stepFrames: 4 });
+    const live = new LiveChordDetector(new ChordMiniScheme(fakeModel, plan, vocab), { lookaheadFrames: 3, stepFrames: 4 });
     const liveEvents = [];
     for (let i = 0; i < device.length; i += 640) {
       live.pushDeviceAudio(device.subarray(i, i + 640));
@@ -145,7 +146,7 @@ describe('live detector', () => {
     expect(liveEvents.length).toBeGreaterThan(20);
 
     const audio = resampleAll(device, 16000, 22050);
-    const steps = await simulateStreaming(audio, fakeModel, plan, vocab, { stepFrames: 1, lookaheads: [3] });
+    const steps = await simulateStreaming(audio, new ChordMiniScheme(fakeModel, plan, vocab), { stepFrames: 1, lookaheads: [3] });
     for (const ev of liveEvents.slice(-10)) {
       const step = steps.find((s) => s.endFrame - 3 === ev.frame)!;
       expect(step).toBeDefined();

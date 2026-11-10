@@ -3,8 +3,8 @@
 //
 //   ┌───────────────────────────────────────────┐  576 x 288
 //   │ Am7                                       │  chord   (brightness = confidence)
-//   │ A  C  E  G                                │  detail  (tones, confidence)
-//   │ 80% · maybe Am7 · key C                   │
+//   │ A  C  E  G  → next F in 2s                │  detail  (tones, next-chord prediction,
+//   │ 80% · maybe Am7 · key C                   │           confidence, key)
 //   │                                           │
 //   │ G 12s · C 8s · Am 5s · F 2s               │  status  (last 4 chords + age, mic, lag; captures input)
 //   │ glasses mic · ~1.1 s behind · tap=pause   │

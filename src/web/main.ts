@@ -5,6 +5,7 @@ import { listMicrophones, MicSource } from '../audio/mic-source';
 import { type PcmSource } from '../audio/source';
 import { type DetectionEvent, defaultDetectorOptions, type DetectorOptions } from '../engine/detector';
 import { KeyEstimator, type KeyEstimate } from '../engine/key';
+import { ChordPredictor, type ChordPrediction } from '../engine/predict';
 import { type LabSegment, majmin, parseLab, referenceAt, Score } from '../engine/evaluate';
 import { FRAME_SECONDS } from '../engine/model';
 import { type Chord, displayName, spellChord } from '../engine/theory';
@@ -21,6 +22,7 @@ const ui = {
   levelTag: $('level-tag'),
   confText: $('conf-text'),
   key: $('key'),
+  next: $('next'),
   confBar: $('conf-bar'),
   tones: $('tones'),
   history: $('history'),
@@ -63,6 +65,11 @@ let history: { display: string; at: number }[] = [];
 let lastEventAt = 0;
 let shown: Chord | undefined;
 const keyEstimator = new KeyEstimator();
+const predictor = new ChordPredictor();
+let prediction: ChordPrediction | undefined;
+/** Glasses detail text around the "next" prediction, kept so the countdown can refresh it. */
+let detailTones = '';
+let detailLine2 = '';
 let reference: LabSegment[] | undefined;
 let screenScore = new Score();
 let labelScore = new Score();
@@ -235,8 +242,11 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
   ui.confBar.style.width = `${Math.round(d.confidence * 100)}%`;
   ui.tones.textContent = spellChord(d.chord).join('  ');
   keyEstimator.add(d.chord, event.frameTime, d.confidence);
-  const keyText = keyLabel(keyEstimator.estimate());
+  const key = keyEstimator.estimate();
+  const keyText = keyLabel(key);
   ui.key.textContent = keyText;
+  if (d.level !== 'uncertain') predictor.add(d.chord, event.frameTime);
+  prediction = predictor.predict(key);
   if (d.level !== 'uncertain' && history[history.length - 1]?.display !== d.display) {
     history.push({ display: d.display, at: performance.now() });
     if (history.length > 8) history.shift();
@@ -254,13 +264,38 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
     const tones = spellChord(d.chord).join('  ');
     const note = d.level === 'simplified' ? ` · maybe ${d.best.display}` : d.level === 'uncertain' ? ' · unsure' : '';
     glasses.set('chord', d.level === 'uncertain' ? `${d.display}?` : d.display, LEVEL_BRIGHTNESS[d.level]);
-    glasses.set('detail', `${tones}\n${Math.round(d.confidence * 10) * 10}%${note} · ${keyText}`, 2);
+    detailTones = tones;
+    detailLine2 = `${Math.round(d.confidence * 10) * 10}%${note} · ${keyText}`;
   }
+  renderNext();
 
   if (reference) {
     labelScore.add(referenceAt(reference, event.frameTime), d.chord);
     ui.sLabel.textContent = `${pct(labelScore.get('majmin'))} majmin · ${pct(labelScore.get('exact'))} exact`;
   }
+};
+
+/**
+ * "next F in 1.2s" / "next F now" / "next F?" (low confidence). The countdown is
+ * against the audio heard so far, not the (lagging) displayed chord, so it
+ * points at the real change in the music. `wholeSeconds` for the glasses.
+ */
+const nextLabel = (wholeSeconds: boolean): string => {
+  if (!prediction) return '';
+  const name = `next ${prediction.display}${prediction.probability < 0.5 ? '?' : ''}`;
+  if (prediction.changeAt === undefined) return name;
+  const eta = prediction.changeAt - recordedSamples / 16000;
+  if (eta < -2) return name; // overdue: the chord is being held longer than usual
+  if (eta <= 0.3) return `${name} now`;
+  return `${name} in ${wholeSeconds ? `${Math.round(eta)}s` : `${eta.toFixed(1)}s`}`;
+};
+
+/** Updates the prediction in the preview and on the glasses (detail line 1). */
+const renderNext = (): void => {
+  ui.next.textContent = nextLabel(false);
+  if (!glasses || !detailTones) return;
+  const next = nextLabel(true);
+  glasses.set('detail', `${detailTones}${next ? `  → ${next}` : ''}\n${detailLine2}`, 2);
 };
 
 /** "key G", "key Em?" (ambiguous), or "key …" while there's too little evidence. */
@@ -299,6 +334,7 @@ const onTick = (): void => {
   const heard = recordedSamples / 16000;
   ui.sAudio.textContent = `${heard.toFixed(1)} s`;
   if (history.length > 1) renderHistory(); // keep the "ago" times ticking between chord changes
+  renderNext();
   if (lastEventAt && performance.now() - lastEventAt > 2000) {
     ui.chord.classList.add('stale');
     if (glasses && performance.now() - lastEventAt > 3000) glasses.set('chord', ui.chord.textContent ?? ' ', 1);
@@ -324,6 +360,10 @@ const start = async (): Promise<void> => {
   history = [];
   shown = undefined;
   keyEstimator.reset();
+  predictor.reset();
+  prediction = undefined;
+  detailTones = detailLine2 = '';
+  ui.next.textContent = '';
   ui.key.textContent = '';
   screenScore = new Score();
   labelScore = new Score();

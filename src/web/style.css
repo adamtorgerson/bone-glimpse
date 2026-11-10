@@ -58,6 +58,7 @@ header h1 span { font-weight: 400; color: var(--muted); font-size: 15px; }
 .g2-tag:empty { display: none; }
 .g2-small { font-size: 3.2cqw; color: var(--g2-dim); margin-top: 0.5em; }
 .g2-tones { font-size: 5cqw; letter-spacing: 0.08em; }
+.g2-next { font-size: 4cqw; color: var(--g2-dim); white-space: nowrap; }
 .g2-bar { height: 1.2cqw; background: #0f2414; border-radius: 99px; overflow: hidden; }
 #conf-bar { height: 100%; width: 0; background: var(--g2); transition: width 0.15s; }
 .g2-history { font-size: 3.6cqw; color: var(--g2-dim); align-self: end; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

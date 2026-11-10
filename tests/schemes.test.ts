@@ -106,6 +106,20 @@ describe('chroma scheme', () => {
     }
     expect(events.at(-1)!.decision.best.label).toBe('F');
   });
+
+  it.each([22050, 44100, 48000])('live detection works at a %i Hz capture rate', { timeout: 60_000 }, async (rate) => {
+    const input = new Float32Array([...tones([43, 55, 59, 62], 4, rate), ...tones([41, 53, 57, 60], 4, rate)]);
+    const live = new LiveChordDetector(scheme, { lookaheadFrames: 2, stepFrames: 3 }, rate);
+    const chunk = Math.round(rate * 0.04);
+    let last;
+    for (let i = 0; i < input.length; i += chunk) {
+      live.pushDeviceAudio(input.subarray(i, i + chunk));
+      last = (await live.poll()) ?? last;
+    }
+    expect(live.audioSeconds).toBeCloseTo(8, 0);
+    expect(last!.frameTime).toBeGreaterThan(7);
+    expect(last!.decision.best.label).toBe('F');
+  });
 });
 
 describe('basic pitch scheme', () => {

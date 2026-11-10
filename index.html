@@ -43,6 +43,11 @@
           <label for="mic">Microphone</label>
           <select id="mic"><option value="">Default</option></select>
         </div>
+        <div class="field" id="rate-field">
+          <label for="rate">Capture rate</label>
+          <select id="rate"></select>
+          <small>16 kHz matches the glasses. Chords are analysed at 22.05 kHz whatever you pick; the single-note readout uses the full rate, which helps it name high notes (above ~C7) over accompaniment.</small>
+        </div>
         <div class="field hidden" id="file-field">
           <label for="file">Audio file</label>
           <input id="file" type="file" accept="audio/*" />
@@ -55,7 +60,7 @@
         <div class="buttons">
           <button id="start" disabled>Start</button>
           <button id="stop" disabled>Stop</button>
-          <button id="download" disabled title="16 kHz WAV of exactly what the detector heard + JSON event log">Download session</button>
+          <button id="download" disabled title="WAV (at the capture rate) of exactly what the detector heard + JSON event log">Download session</button>
         </div>
       </section>
 

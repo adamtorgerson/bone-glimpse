@@ -15,8 +15,13 @@ npm run dev        # http://localhost:5180 (also on your LAN, for the phone)
 
 Open the page in Chrome. Pick **Microphone** or **Audio file**, then press
 **Start**. For files you can load a reference `.lab` to get live accuracy.
-**Download session** saves exactly what the detector heard (16 kHz WAV) plus a
-JSON log of every detection, so you can replay it through the harness.
+**Capture rate** (mic and file only) defaults to 16 kHz, the rate the glasses
+deliver; 22.05, 44.1 and 48 kHz skip that 8 kHz bandwidth limit (`?rate=48000`
+in the URL). Every chord scheme analyses at 22.05 kHz, so 44.1/48 kHz give the
+same chords as 22.05 kHz; the single-note detector runs at the full capture
+rate, where the extra partials help it name high notes over accompaniment. **Download session** saves exactly what the detector heard
+(WAV at the capture rate) plus a JSON log of every detection, so you can replay
+it through the harness.
 
 ## On the G2 glasses
 
@@ -81,9 +86,11 @@ npm run synth                          # makes test-audio/synth/*.wav + .lab (ex
 npm run eval -- test-audio/synth       # or any folder of .wav files with sibling .lab files
 npm run eval -- song.wav --lookaheads 0,2,4,8 --step 2 --json report.json
 npm run eval -- test-audio/synth --scheme all            # or e.g. --scheme chroma,basicpitch
+npm run eval -- test-audio/synth --rate 22050            # capture rate instead of the glasses' 16 kHz
 ```
 
-Audio goes through the glasses path (mono, then 16 kHz, then 16-bit, then 22.05 kHz).
+Audio goes through the glasses path (mono, then 16 kHz, then 16-bit, then 22.05 kHz);
+`--rate` swaps the 16 kHz step for a mic/file capture rate.
 For each lookahead the harness reports:
 
 | metric | meaning |
@@ -139,7 +146,7 @@ them, so they flatter the template schemes. Real recordings will decide it.
 
 ```
 mic / file / (later) Even G2 audioEvent
-  → 16 kHz s16 mono chunks            src/audio/*        (device-specific)
+  → s16 mono chunks, 16 kHz           src/audio/*        (device-specific; mic/file: optional 22.05/44.1/48 kHz)
   → resample to 22.05 kHz             src/engine/resample.ts
   → chord scheme (selectable)         src/engine/detector.ts, scheme.ts, schemes/*
       ChordMini: CQT → 108-frame window → transformer
@@ -162,8 +169,10 @@ mic / file / (later) Even G2 audioEvent
   Otherwise the result is shown as unsure.
 * **Single notes** (`src/engine/note.ts`) don't use the chord model, which only
   knows chord labels. They come from a separate harmonic-salience detector on
-  the raw 16 kHz audio: a 256 ms FFT every 64 ms, covering E1–C8. That's wider
-  than the model CQT's C1–B6. It runs on the UI thread (about 0.2 ms per frame),
+  the raw audio at the capture rate: a 256 ms FFT every 64 ms, covering E1–C8.
+  That's wider than the model CQT's C1–B6. At 16 kHz notes above ~C7 keep only
+  their fundamental; at 44.1/48 kHz a high melody note over a chord (E7, G7 at
+  1.5× the chord's level) is named right every time instead of about 3 in 5. It runs on the UI thread (about 0.2 ms per frame),
   so it never waits on inference. Confidence is the geometric mean of two
   measures: *share*, the fraction of the energy in that note's partials, and
   *dominance*, how far it is ahead of the strongest other note. A solo note

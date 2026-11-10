@@ -5,7 +5,7 @@ const withTimeout = <T,>(promise: Promise<T>, ms: number, message: string): Prom
 
 /**
  * Plays an audio file in real time (optionally audible) and feeds the
- * detector the same 16 kHz stream a mic would, so timing behaves like live.
+ * detector the same stream a mic would (at `sampleRate`), so timing behaves like live.
  * Any format the browser can decode works (wav, mp3, m4a, flac, ogg).
  *
  * start() must be called from a user gesture (a tap): mobile browsers and
@@ -21,6 +21,7 @@ export class FileSource implements PcmSource {
   constructor(
     private readonly file: File,
     private readonly audible: boolean,
+    readonly sampleRate: number,
     private readonly onEnded?: () => void,
   ) {
     this.name = file.name;
@@ -48,7 +49,7 @@ export class FileSource implements PcmSource {
     if (context.state !== 'running') throw new Error('audio is blocked by the browser (context suspended); tap Start again');
     this.node = new AudioBufferSourceNode(context, { buffer });
     // Arithmetic-mean downmix happens in the tap (matches the model's training).
-    await createTap(context, this.node, onChunk);
+    await createTap(context, this.node, onChunk, this.sampleRate);
     if (this.audible) this.node.connect(context.destination);
     this.node.onended = () => this.onEnded?.();
     this.startedAt = context.currentTime;

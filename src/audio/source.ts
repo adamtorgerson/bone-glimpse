@@ -1,15 +1,16 @@
-// Audio sources deliver what the Even G2 SDK delivers: 16 kHz mono PCM,
-// 16-bit quantised, in small chunks. The laptop sources (mic, file) emulate
-// that so the detector code is identical; a future EvenSource will wrap
-// bridge.audioControl(...) + audioEvent.audioPcm (see pcm16BytesToFloat).
+// Audio sources deliver what the Even G2 SDK delivers: mono PCM, 16-bit
+// quantised, in small chunks, at 16 kHz. The laptop sources (mic, file)
+// emulate that so the detector code is identical, but can capture at a higher
+// rate (CAPTURE_RATES) to skip the glasses' 8 kHz bandwidth limit.
 import { quantize16 } from '../engine/wav';
 import { StreamResampler } from '../engine/resample';
-import { DEVICE_SAMPLE_RATE } from '../engine/detector';
 
-export type ChunkHandler = (pcm16k: Float32Array, level: number) => void;
+export type ChunkHandler = (pcm: Float32Array, level: number) => void;
 
 export interface PcmSource {
   readonly name: string;
+  /** Rate of the PCM handed to the ChunkHandler. */
+  readonly sampleRate: number;
   start(onChunk: ChunkHandler): Promise<void>;
   /** Resolves once capture has really stopped (so a restart can't race it). */
   stop(): void | Promise<void>;
@@ -34,21 +35,21 @@ registerProcessor('pcm-tap', Tap);
 `;
 
 /**
- * Taps a node's output, converts to device format (16 kHz, s16) and forwards chunks.
+ * Taps a node's output, converts to device format (`rate`, s16) and forwards chunks.
  * Uses an AudioWorklet where available; on insecure origins (e.g. the phone
  * loading the dev server over http://<LAN-IP>) `audioWorklet` is undefined, so
  * it falls back to the deprecated but universally supported ScriptProcessorNode.
  */
-export const createTap = async (context: AudioContext, node: AudioNode, onChunk: ChunkHandler): Promise<AudioNode> => {
-  const resampler = new StreamResampler(context.sampleRate, DEVICE_SAMPLE_RATE);
+export const createTap = async (context: AudioContext, node: AudioNode, onChunk: ChunkHandler, rate: number): Promise<AudioNode> => {
+  const resampler = context.sampleRate === rate ? undefined : new StreamResampler(context.sampleRate, rate);
   // Batch ~40 ms per chunk, roughly the cadence of BLE audio packets.
   let pending: Float32Array[] = [];
   let pendingLength = 0;
   const push = (mono: Float32Array): void => {
-    const out = resampler.push(mono);
+    const out = resampler ? resampler.push(mono) : mono;
     pending.push(out);
     pendingLength += out.length;
-    if (pendingLength < DEVICE_SAMPLE_RATE * 0.04) return;
+    if (pendingLength < rate * 0.04) return;
     const chunk = new Float32Array(pendingLength);
     let o = 0;
     for (const p of pending) {

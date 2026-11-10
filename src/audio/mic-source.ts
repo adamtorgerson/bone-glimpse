@@ -7,10 +7,13 @@ export class MicSource implements PcmSource {
   private stream?: MediaStream;
   private delivered = 0;
 
-  constructor(private readonly deviceId?: string) {}
+  constructor(
+    private readonly deviceId: string | undefined,
+    readonly sampleRate: number,
+  ) {}
 
   get position(): number {
-    return this.delivered / 16000;
+    return this.delivered / this.sampleRate;
   }
 
   async start(onChunk: ChunkHandler): Promise<void> {
@@ -29,7 +32,7 @@ export class MicSource implements PcmSource {
     await createTap(this.context, input, (pcm, level) => {
       this.delivered += pcm.length;
       onChunk(pcm, level);
-    });
+    }, this.sampleRate);
   }
 
   stop(): void {

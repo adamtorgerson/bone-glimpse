@@ -3,7 +3,7 @@ import { EvenSource } from '../audio/even-source';
 import { FileSource } from '../audio/file-source';
 import { listMicrophones, MicSource } from '../audio/mic-source';
 import { type PcmSource } from '../audio/source';
-import { type DetectionEvent, defaultDetectorOptions, type DetectorOptions } from '../engine/detector';
+import { CAPTURE_RATES, type CaptureRate, DEVICE_SAMPLE_RATE, type DetectionEvent, defaultDetectorOptions, type DetectorOptions, isCaptureRate } from '../engine/detector';
 import { KeyEstimator, type KeyEstimate } from '../engine/key';
 import { ChordPredictor, type ChordPrediction, chordId } from '../engine/predict';
 import { type LabSegment, majmin, parseLab, referenceAt, Score } from '../engine/evaluate';
@@ -32,6 +32,7 @@ const ui = {
   history: $('history'),
   source: $<HTMLSelectElement>('source'),
   mic: $<HTMLSelectElement>('mic'),
+  rate: $<HTMLSelectElement>('rate'),
   file: $<HTMLInputElement>('file'),
   audible: $<HTMLInputElement>('audible'),
   lab: $<HTMLInputElement>('lab'),
@@ -59,7 +60,8 @@ const ui = {
 // ?debug logs detections to the console; ?autostart starts as soon as the model is ready;
 // ?backend=webgpu picks the inference backend; ?scheme=chroma|basicpitch (|essentia on
 // the dev server) picks
-// the detection scheme (default chordmini).
+// the detection scheme (default chordmini); ?rate=22050|44100|48000 the capture rate
+// of the mic/file sources (default 16000, like the glasses).
 const params = new URLSearchParams(location.search);
 const debug = params.has('debug');
 const schemeParam = params.get('scheme');
@@ -69,6 +71,8 @@ let ready = false;
 let source: PcmSource | undefined;
 let recording: Float32Array[] = [];
 let recordedSamples = 0;
+/** Rate of `recording` and of the audio sent to the workers (fixed per session). */
+let sourceRate: CaptureRate = DEVICE_SAMPLE_RATE;
 let events: DetectionEvent[] = [];
 /**
  * Chords in the order they appeared (newest last), with when they first
@@ -97,7 +101,7 @@ let detailLine2 = '';
 /** Last chord line sent to the glasses, re-sent dimmed when detections go stale. */
 let chordGlasses = '';
 /** Single-note detection runs here on the UI thread: it is cheap and must not wait behind the chord model. */
-const noteDetector = new LiveNoteDetector();
+let noteDetector = new LiveNoteDetector();
 let noteReadings: NoteReading[] = [];
 let noteGlasses = '';
 let reference: LabSegment[] | undefined;
@@ -112,6 +116,9 @@ let glasses: GlassesDisplay | undefined;
 let glassesAutostart = false;
 
 const isEvenSource = (value: string): boolean => value === 'g2' || value === 'g2phone';
+/** The Even SDK only delivers 16 kHz; the laptop/phone sources use the selected rate. */
+const selectedRate = (): CaptureRate => (isEvenSource(ui.source.value) || !isCaptureRate(ui.rate.value) ? DEVICE_SAMPLE_RATE : (Number(ui.rate.value) as CaptureRate));
+const kHz = (rate: number): string => `${rate / 1000} kHz`;
 const LEVEL_BRIGHTNESS = { full: 4, simplified: 3, none: 2, uncertain: 1 } as const;
 
 const ms = (frames: number): string => `${Math.round(frames * FRAME_SECONDS * 1000)} ms`;
@@ -204,7 +211,7 @@ const startWorker = (backend: Backend, active: boolean): void => {
   setBackendState(backend, 'loading');
   const worker = new Worker(new URL('./detector.worker.ts', import.meta.url), { type: 'module', name: `detector-${backend}` });
   workers.set(backend, worker);
-  workerEpoch.set(backend, source ? recordedSamples / 16000 : 0);
+  workerEpoch.set(backend, source ? recordedSamples / sourceRate : 0);
   worker.onmessage = (e: MessageEvent<FromWorker>) => {
     const msg = e.data;
     if (msg.type === 'ready') {
@@ -243,6 +250,7 @@ const startWorker = (backend: Backend, active: boolean): void => {
     active,
     options: options(),
     modelsBase: new URL('models/', document.baseURI).href,
+    inputRate: sourceRate,
   } satisfies ToWorker);
 };
 
@@ -264,11 +272,11 @@ const onDetection = (event: DetectionEvent, backend: Backend): void => {
   if (!source) return; // an analysis that was in flight when listening stopped
   // True display delay: audio the UI has captured by now minus the moment
   // the chord describes (excludes only OS/mic buffering before the tap).
-  const delay = recordedSamples / 16000 - event.frameTime;
+  const delay = recordedSamples / sourceRate - event.frameTime;
   events.push({ ...event, delay });
   if (debug) {
     const d = event.decision;
-    console.log(`[detect] t=${event.frameTime.toFixed(2)}s heard=${(recordedSamples / 16000).toFixed(2)}s ${d.display} (${d.level} ${(d.confidence * 100).toFixed(0)}%) compute=${event.computeMs.toFixed(0)}ms delay=${delay.toFixed(2)}s`);
+    console.log(`[detect] t=${event.frameTime.toFixed(2)}s heard=${(recordedSamples / sourceRate).toFixed(2)}s ${d.display} (${d.level} ${(d.confidence * 100).toFixed(0)}%) compute=${event.computeMs.toFixed(0)}ms delay=${delay.toFixed(2)}s`);
   }
   lastEventAt = performance.now();
   computeTimes.push(event.computeMs);
@@ -330,7 +338,7 @@ const nextLabel = (wholeSeconds: boolean): string => {
   if (!prediction) return '';
   const name = `next ${prediction.display}${prediction.probability < 0.5 ? '?' : ''}`;
   if (prediction.changeAt === undefined) return name;
-  const eta = prediction.changeAt - recordedSamples / 16000;
+  const eta = prediction.changeAt - recordedSamples / sourceRate;
   if (eta < -2) return name; // overdue: the chord is being held longer than usual
   if (eta <= 0.3) return `${name} now`;
   return `${name} in ${wholeSeconds ? `${Math.round(eta)}s` : `${eta.toFixed(1)}s`}`;
@@ -410,7 +418,7 @@ const statusLine = (delay?: number): string => {
 
 // Sample what is on screen vs what is playing, 10x per second.
 const onTick = (): void => {
-  const heard = recordedSamples / 16000;
+  const heard = recordedSamples / sourceRate;
   ui.sAudio.textContent = `${heard.toFixed(1)} s`;
   if (history.length > 1) renderHistory(); // keep the "ago" times ticking between chord changes
   renderNext();
@@ -445,7 +453,6 @@ const start = async (): Promise<void> => {
   predictionTiming = [];
   ui.sPredict.textContent = '–';
   detailTones = detailLine2 = noteGlasses = chordGlasses = '';
-  noteDetector.reset();
   noteReadings = [];
   ui.note.textContent = '';
   ui.next.textContent = '';
@@ -457,7 +464,9 @@ const start = async (): Promise<void> => {
   ui.history.textContent = '';
   ui.chord.textContent = '…';
   ui.chord.className = 'g2-chord';
-  send({ type: 'reset' });
+  sourceRate = selectedRate();
+  noteDetector = new LiveNoteDetector(noteDetector.options, sourceRate);
+  send({ type: 'reset', inputRate: sourceRate });
   for (const b of workers.keys()) workerEpoch.set(b, 0);
   send({ type: 'options', options: options() });
 
@@ -470,13 +479,14 @@ const start = async (): Promise<void> => {
       setStatus('Choose an audio file first.', true);
       return;
     }
-    source = new FileSource(file, ui.audible.checked, () => void stop());
+    source = new FileSource(file, ui.audible.checked, sourceRate, () => void stop());
   } else {
-    source = new MicSource(ui.mic.value || undefined);
+    source = new MicSource(ui.mic.value || undefined, sourceRate);
   }
   ui.start.disabled = true;
   ui.stop.disabled = false;
   ui.download.disabled = true;
+  ui.rate.disabled = true;
   setStatus(`Starting ${source.name}…`);
   try {
     await source.start((pcm, level) => {
@@ -488,7 +498,7 @@ const start = async (): Promise<void> => {
       noteReadings.push(...readings);
       if (readings.length) renderNote(readings[readings.length - 1]);
     });
-    setStatus(`Listening: ${source.name}`);
+    setStatus(`Listening: ${source.name} · ${kHz(sourceRate)}`);
     glasses?.set('chord', '…', 2);
     glasses?.set('detail', 'listening', 2);
     glasses?.set('status', statusLine(), 2);
@@ -506,13 +516,14 @@ const stop = async (): Promise<void> => {
   const stopping = source;
   source = undefined;
   await stopping?.stop();
-  send({ type: 'reset' });
+  send({ type: 'reset', inputRate: sourceRate });
   for (const b of workers.keys()) workerEpoch.set(b, 0);
   window.clearInterval(tick);
   ui.start.disabled = !ready;
   ui.stop.disabled = true;
+  ui.rate.disabled = false;
   ui.download.disabled = recordedSamples === 0;
-  if (ready) setStatus(`Stopped · ${events.length} detections over ${(recordedSamples / 16000).toFixed(1)} s`);
+  if (ready) setStatus(`Stopped · ${events.length} detections over ${(recordedSamples / sourceRate).toFixed(1)} s`);
   glasses?.set('chord', 'paused', 2);
   glasses?.set('detail', 'tap: listen · double-tap: switch mic', 2);
   glasses?.set('status', 'swipe up/down: lookahead (accuracy vs. lag)', 2);
@@ -599,12 +610,13 @@ const download = (): void => {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
-  save(encodeWav16(all, 16000) as BlobPart, 'audio/wav', `boneglimpse-${stamp}.wav`);
+  save(encodeWav16(all, sourceRate) as BlobPart, 'audio/wav', `boneglimpse-${stamp}.wav`);
   save(
     JSON.stringify(
       {
         createdAt: new Date().toISOString(),
         source: ui.source.value,
+        sampleRate: sourceRate,
         scheme,
         backend: activeBackend,
         options: options(),
@@ -642,6 +654,7 @@ const refreshMics = async (): Promise<void> => {
 ui.source.addEventListener('change', () => {
   const file = ui.source.value === 'file';
   $('mic-field').classList.toggle('hidden', file || isEvenSource(ui.source.value));
+  $('rate-field').classList.toggle('hidden', isEvenSource(ui.source.value));
   $('file-field').classList.toggle('hidden', !file);
   $('lab-field').classList.toggle('hidden', !file);
 });
@@ -680,6 +693,16 @@ const switchScheme = (next: SchemeId): void => {
 ui.scheme.replaceChildren(...WEB_SCHEME_IDS.map((id) => new Option(SCHEME_LABELS[id], id)));
 ui.scheme.value = scheme;
 ui.scheme.addEventListener('change', () => switchScheme(ui.scheme.value as SchemeId));
+ui.rate.replaceChildren(
+  ...CAPTURE_RATES.map((r) => new Option(r === DEVICE_SAMPLE_RATE ? `${kHz(r)} (same as glasses)` : kHz(r), String(r))),
+);
+ui.rate.value = isCaptureRate(params.get('rate')) ? params.get('rate')! : String(DEVICE_SAMPLE_RATE);
+ui.rate.addEventListener('change', () => {
+  const url = new URL(location.href);
+  if (ui.rate.value === String(DEVICE_SAMPLE_RATE)) url.searchParams.delete('rate');
+  else url.searchParams.set('rate', ui.rate.value);
+  window.history.replaceState(null, '', url);
+});
 ui.start.addEventListener('click', () => void start());
 ui.stop.addEventListener('click', () => void stop());
 ui.download.addEventListener('click', download);

@@ -1,6 +1,6 @@
-// Streaming chord detection. Audio comes in as 16 kHz mono PCM chunks (the
-// format the Even G2 SDK delivers from the glasses or phone mic), is
-// resampled to the model rate, and every `stepFrames` the selected scheme
+// Streaming chord detection. Audio comes in as mono PCM chunks at the
+// capture rate (16 kHz from the Even G2 SDK; laptop sources may use a higher
+// CAPTURE_RATES entry), is resampled to the model rate, and every `stepFrames` the selected scheme
 // analyses a window ending at the newest audio. The chord reported is the one
 // for frame (end - lookahead): more lookahead = more right-hand context =
 // better accuracy, but the display lags by lookahead * ~93 ms.
@@ -12,6 +12,15 @@ import { type ChordScheme } from './scheme';
 export { buildWindow, CQT_MARGIN_FRAMES, WINDOW_HISTORY_SAMPLES } from './schemes/chordmini';
 
 export const DEVICE_SAMPLE_RATE = 16000; // Even G2 audioEvent: PCM s16le, 16 kHz, mono
+
+/**
+ * Rates the laptop/phone sources (mic, file) can capture at. 16 kHz mirrors
+ * the glasses; higher rates skip that bandwidth limit (8 kHz). Every scheme
+ * analyses at SAMPLE_RATE (22.05 kHz), so 44.1/48 kHz only add headroom.
+ */
+export const CAPTURE_RATES = [16000, 22050, 44100, 48000] as const;
+export type CaptureRate = (typeof CAPTURE_RATES)[number];
+export const isCaptureRate = (value: unknown): value is CaptureRate => CAPTURE_RATES.includes(Number(value) as CaptureRate);
 
 /** Converts a little-endian s16 byte buffer (Even `audioPcm`) to floats in [-1, 1). */
 export const pcm16BytesToFloat = (bytes: Uint8Array): Float32Array => {
@@ -85,7 +94,7 @@ export const defaultDetectorOptions: DetectorOptions = {
 
 export class LiveChordDetector {
   options: DetectorOptions;
-  private readonly resampler = new StreamResampler(DEVICE_SAMPLE_RATE, SAMPLE_RATE);
+  private readonly resample: (samples: Float32Array) => Float32Array;
   private readonly history: AudioHistory;
   private lastEndFrame = -Infinity;
   private busy = false;
@@ -93,8 +102,15 @@ export class LiveChordDetector {
   constructor(
     readonly scheme: ChordScheme,
     options: Partial<DetectorOptions> = {},
+    readonly inputRate: number = DEVICE_SAMPLE_RATE,
   ) {
     this.options = { ...defaultDetectorOptions, ...options };
+    if (inputRate === SAMPLE_RATE) {
+      this.resample = (samples) => samples.slice();
+    } else {
+      const resampler = new StreamResampler(inputRate, SAMPLE_RATE);
+      this.resample = (samples) => resampler.push(samples);
+    }
     this.history = new AudioHistory(scheme.historySamples + SAMPLE_RATE);
   }
 
@@ -102,13 +118,14 @@ export class LiveChordDetector {
     return this.scheme.vocab;
   }
 
-  /** Seconds of device audio received so far (at model rate). */
+  /** Seconds of input audio received so far (at model rate). */
   get audioSeconds(): number {
     return this.history.end / SAMPLE_RATE;
   }
 
-  pushDeviceAudio(samples16k: Float32Array): void {
-    this.history.append(this.resampler.push(samples16k));
+  /** Mono samples at `inputRate`. */
+  pushDeviceAudio(samples: Float32Array): void {
+    this.history.append(this.resample(samples));
   }
 
   /** Runs an analysis if a new step is due and none is in flight. */

@@ -2,7 +2,7 @@
 // app): bridge.audioControl(true, source) starts capture and PCM arrives on
 // event.audioEvent.audioPcm as 16 kHz signed 16-bit little-endian mono.
 import { AudioInputSource, type EvenAppBridge } from '@evenrealities/even_hub_sdk';
-import { pcm16BytesToFloat } from '../engine/detector';
+import { DEVICE_SAMPLE_RATE, pcm16BytesToFloat } from '../engine/detector';
 import { type ChunkHandler, type PcmSource } from './source';
 
 /** The host may hand over PCM as Uint8Array, number[] or base64 depending on version. */
@@ -23,6 +23,7 @@ const STOP_SETTLE_MS = 400;
 
 export class EvenSource implements PcmSource {
   readonly name: string;
+  readonly sampleRate = DEVICE_SAMPLE_RATE;
   private unsubscribe?: () => void;
   private delivered = 0;
   private oddByte?: number; // s16 samples can straddle packets in theory
@@ -36,7 +37,7 @@ export class EvenSource implements PcmSource {
   }
 
   get position(): number {
-    return this.delivered / 16000;
+    return this.delivered / this.sampleRate;
   }
 
   async start(onChunk: ChunkHandler): Promise<void> {

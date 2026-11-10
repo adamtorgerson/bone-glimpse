@@ -1,8 +1,10 @@
 // Single-note detection: "which one note stands out right now, and how
 // clearly?". Independent of the chord model (which only knows chord labels):
-// it works on the raw 16 kHz device audio with its own FFT, so it updates
-// every 64 ms instead of once per model run and covers E1-C8 instead of the
-// model CQT's C1-B6.
+// it works on the raw capture-rate audio (16 kHz from the glasses, up to
+// 48 kHz from a laptop mic or file) with its own FFT, so it updates every
+// 64 ms instead of once per model run and covers E1-C8 instead of the model
+// CQT's C1-B6. Higher rates keep the upper partials of high notes, which the
+// glasses' 8 kHz bandwidth cuts off.
 //
 // Per frame: spectral peaks -> harmonic salience for every semitone
 // candidate (Klapuri-style weighting, which keeps the fundamental ahead of its
@@ -15,14 +17,21 @@
 import { createRealFft } from './fft';
 import { PITCH_NAMES } from './theory';
 
-export const NOTE_SAMPLE_RATE = 16000; // device audio (see detector.ts)
-export const NOTE_WINDOW = 4096; // 256 ms: long enough to separate bass partials
-export const NOTE_HOP = 1024; // a reading every 64 ms
+export const NOTE_SAMPLE_RATE = 16000; // default: device audio (see detector.ts)
+export const NOTE_WINDOW = 4096; // at 16 kHz: 256 ms, long enough to separate bass partials
+export const NOTE_HOP = 1024; // at 16 kHz: a reading every 64 ms
+/** Window and hop at other rates: the same durations, so the same frequency resolution and timing. */
+export const noteWindow = (rate: number): number => Math.round((NOTE_WINDOW * rate) / NOTE_SAMPLE_RATE);
+export const noteHop = (rate: number): number => Math.round((NOTE_HOP * rate) / NOTE_SAMPLE_RATE);
 export const LOWEST_NOTE = 28; // E1, 41 Hz (bass guitar low E)
-/** C8, 4186 Hz (piano top). Above ~C7 only the fundamental fits below 8 kHz, so confidence there is weaker. */
+/**
+ * C8, 4186 Hz (piano top). At 16 kHz only the fundamental of notes above ~C7
+ * fits below 8 kHz, so confidence there is weaker; 44.1/48 kHz keep ~5 partials.
+ */
 export const HIGHEST_NOTE = 108;
 const HARMONICS = 12;
-const MAX_FREQ = 7600; // the 16 kHz resampler rolls off above this
+/** Resamplers roll off above this (7600 Hz at 16 kHz). */
+const maxFrequency = (rate: number): number => 0.475 * rate;
 const MIN_FREQ = 35;
 const PEAK_FLOOR_DB = -45; // peaks this far below the strongest are ignored
 const MAX_PEAKS = 48;
@@ -62,16 +71,49 @@ const N_CANDIDATES = HIGHEST_NOTE - LOWEST_NOTE + 1;
 const CANDIDATE_FREQ = Float64Array.from({ length: N_CANDIDATES }, (_, i) => midiToFrequency(LOWEST_NOTE + i));
 const LOWEST_F0 = midiToFrequency(LOWEST_NOTE - 0.5);
 
-const fft = createRealFft(NOTE_WINDOW);
-const hann = Float64Array.from({ length: NOTE_WINDOW }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / NOTE_WINDOW));
-const windowed = new Float64Array(NOTE_WINDOW);
-const spectrum = new Float64Array(NOTE_WINDOW + 2);
-const power = new Float64Array(NOTE_WINDOW / 2 + 1);
+/**
+ * FFT state for one sample rate. The window is noteWindow(rate) samples,
+ * zero-padded to a power of two (exactly 4096 at 16 kHz).
+ */
+type Analyser = {
+  rate: number;
+  window: number;
+  binHz: number;
+  /** Bins either side of a peak summed into its energy: the Hann main lobe, as at 16 kHz. */
+  lobe: number;
+  fft: ReturnType<typeof createRealFft>;
+  hann: Float64Array;
+  windowed: Float64Array;
+  spectrum: Float64Array;
+  power: Float64Array;
+};
+
+const analysers = new Map<number, Analyser>();
+const analyserFor = (rate: number): Analyser => {
+  let a = analysers.get(rate);
+  if (!a) {
+    const window = noteWindow(rate);
+    const size = 2 ** Math.ceil(Math.log2(window));
+    a = {
+      rate,
+      window,
+      binHz: rate / size,
+      lobe: Math.round((2 * size) / window),
+      fft: createRealFft(size),
+      hann: Float64Array.from({ length: window }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / window)),
+      windowed: new Float64Array(size),
+      spectrum: new Float64Array(size + 2),
+      power: new Float64Array(size / 2 + 1),
+    };
+    analysers.set(rate, a);
+  }
+  return a;
+};
 
 /** Local maxima of the magnitude spectrum, parabolically interpolated (log domain). */
-const findPeaks = (binHz: number): { peaks: Peak[]; total: number } => {
+const findPeaks = ({ power, binHz, lobe, rate }: Analyser): { peaks: Peak[]; total: number } => {
   const lo = Math.ceil(MIN_FREQ / binHz);
-  const hi = Math.min(power.length - 2, Math.floor(MAX_FREQ / binHz));
+  const hi = Math.min(power.length - 2, Math.floor(maxFrequency(rate) / binHz));
   let total = 0;
   let max = 0;
   for (let k = lo; k <= hi; k++) {
@@ -90,7 +132,7 @@ const findPeaks = (binHz: number): { peaks: Peak[]; total: number } => {
     const offset = denom < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (a - c)) / denom)) : 0;
     const peakPower = Math.exp(b - 0.25 * (a - c) * offset);
     let energy = 0;
-    for (let j = Math.max(lo, k - 2); j <= Math.min(hi, k + 2); j++) energy += power[j];
+    for (let j = Math.max(lo, k - lobe); j <= Math.min(hi, k + lobe); j++) energy += power[j];
     peaks.push({ freq: (k + offset) * binHz, amp: Math.sqrt(peakPower), energy });
   }
   peaks.sort((x, y) => y.amp - x.amp);
@@ -144,19 +186,21 @@ const argmax = (values: Float64Array): number => {
 };
 
 /**
- * Analyses one NOTE_WINDOW-sample frame of 16 kHz mono audio. Returns the most
+ * Analyses one noteWindow(rate)-sample frame of mono audio. Returns the most
  * prominent note with its confidence, or undefined for silence.
  */
-export const analyseNoteFrame = (frame: Float32Array, minRms = defaultNoteOptions.minRms): NoteEstimate | undefined => {
-  if (frame.length !== NOTE_WINDOW) throw new RangeError(`Note frames must be ${NOTE_WINDOW} samples`);
+export const analyseNoteFrame = (frame: Float32Array, minRms = defaultNoteOptions.minRms, rate = NOTE_SAMPLE_RATE): NoteEstimate | undefined => {
+  const a = analyserFor(rate);
+  const { window, hann, windowed, spectrum, power } = a;
+  if (frame.length !== window) throw new RangeError(`Note frames at ${rate} Hz must be ${window} samples`);
   let sum = 0;
-  for (let i = 0; i < NOTE_WINDOW; i++) sum += frame[i] * frame[i];
-  if (Math.sqrt(sum / NOTE_WINDOW) < minRms) return undefined;
+  for (let i = 0; i < window; i++) sum += frame[i] * frame[i];
+  if (Math.sqrt(sum / window) < minRms) return undefined;
 
-  for (let i = 0; i < NOTE_WINDOW; i++) windowed[i] = frame[i] * hann[i];
-  fft.forward(windowed, spectrum);
+  for (let i = 0; i < window; i++) windowed[i] = frame[i] * hann[i];
+  a.fft.forward(windowed, spectrum);
   for (let k = 0; k < power.length; k++) power[k] = spectrum[2 * k] ** 2 + spectrum[2 * k + 1] ** 2;
-  const { peaks, total } = findPeaks(NOTE_SAMPLE_RATE / NOTE_WINDOW);
+  const { peaks, total } = findPeaks(a);
   if (!peaks.length || total <= 0) return undefined;
 
   const first = harmonicSalience(peaks);
@@ -210,20 +254,28 @@ export type NoteReading = {
 };
 
 /**
- * Streaming wrapper: feed 16 kHz chunks, get a reading every NOTE_HOP samples.
+ * Streaming wrapper: feed chunks at `rate`, get a reading every noteHop(rate) samples (64 ms).
  * A note is only reported once it wins 2 of the last 3 frames, and its
  * confidence is averaged over those 3 (a frame that disagrees counts as 0),
  * so single-frame flickers don't reach the display.
  */
 export class LiveNoteDetector {
   options: NoteOptions;
-  private buffer = new Float32Array(NOTE_WINDOW * 2);
+  private readonly window: number;
+  private readonly hop: number;
+  private buffer: Float32Array;
   private length = 0;
   private consumed = 0; // absolute index of buffer[0]
   private recent: (NoteEstimate | undefined)[] = [];
 
-  constructor(options: Partial<NoteOptions> = {}) {
+  constructor(
+    options: Partial<NoteOptions> = {},
+    readonly rate: number = NOTE_SAMPLE_RATE,
+  ) {
     this.options = { ...defaultNoteOptions, ...options };
+    this.window = noteWindow(rate);
+    this.hop = noteHop(rate);
+    this.buffer = new Float32Array(this.window * 2);
   }
 
   push(samples: Float32Array): NoteReading[] {
@@ -236,12 +288,13 @@ export class LiveNoteDetector {
     this.length += samples.length;
 
     const readings: NoteReading[] = [];
-    while (this.length >= NOTE_WINDOW) {
-      const estimate = analyseNoteFrame(this.buffer.subarray(0, NOTE_WINDOW), this.options.minRms);
-      readings.push(this.smooth(estimate, (this.consumed + NOTE_WINDOW / 2) / NOTE_SAMPLE_RATE));
-      this.buffer.copyWithin(0, NOTE_HOP, this.length);
-      this.length -= NOTE_HOP;
-      this.consumed += NOTE_HOP;
+    const { window, hop, rate } = this;
+    while (this.length >= window) {
+      const estimate = analyseNoteFrame(this.buffer.subarray(0, window), this.options.minRms, rate);
+      readings.push(this.smooth(estimate, (this.consumed + window / 2) / rate));
+      this.buffer.copyWithin(0, hop, this.length);
+      this.length -= hop;
+      this.consumed += hop;
     }
     return readings;
   }

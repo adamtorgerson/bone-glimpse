@@ -2,14 +2,15 @@
 //
 //   npm run eval -- <file.wav | dir> [...] [--scheme chordmini|chroma|essentia|basicpitch|all]
 //                  [--lookaheads 0,2,4,8,16] [--step 2] [--threads 4] [--json report.json]
-//                  [--full-threshold 0.5] [--family-threshold 0.5]
+//                  [--full-threshold 0.5] [--family-threshold 0.5] [--rate 16000]
 //
 // --scheme takes one detection scheme, a comma-separated list or "all"; with
 // several, each is run in turn and a side-by-side summary is printed.
 //
 // Each audio file needs a sibling .lab (same basename) with reference chords.
 // Audio is put through the same path as the glasses: downmix -> 16 kHz ->
-// 16-bit -> 22.05 kHz, then:
+// 16-bit -> 22.05 kHz (--rate picks the capture rate instead of 16 kHz, to
+// compare with the laptop/phone sources' higher-rate options), then:
 //   * offline: whole song visible (upper bound for "analyse then play along")
 //   * streaming: the live detector's exact computation for each lookahead
 // Reported per lookahead:
@@ -27,6 +28,7 @@ import { resampleAll } from '../src/engine/resample';
 import { isSchemeId, SCHEME_IDS, SCHEME_LABELS, type SchemeId } from '../src/engine/scheme';
 import { type Chord } from '../src/engine/theory';
 import { decodeWav, quantize16, toMono } from '../src/engine/wav';
+import { CAPTURE_RATES, type CaptureRate } from '../src/engine/detector';
 import { loadNodeScheme } from './lib/node-model';
 
 const { values, positionals } = parseArgs({
@@ -39,6 +41,7 @@ const { values, positionals } = parseArgs({
     json: { type: 'string' },
     'full-threshold': { type: 'string', default: '0.5' },
     'family-threshold': { type: 'string', default: '0.5' },
+    rate: { type: 'string', default: '16000' },
   },
 });
 
@@ -55,6 +58,12 @@ const decisionOptions = {
   fullThreshold: Number(values['full-threshold']),
   familyThreshold: Number(values['family-threshold']),
 };
+
+const captureRate = Number(values.rate);
+if (!CAPTURE_RATES.includes(captureRate as CaptureRate)) {
+  console.error(`unsupported --rate ${values.rate} (choose from ${CAPTURE_RATES.join(', ')})`);
+  process.exit(1);
+}
 
 const files = positionals.flatMap((p) =>
   statSync(p).isDirectory()
@@ -86,8 +95,8 @@ for (const file of files) {
   }
   const segments: LabSegment[] = parseLab(readFileSync(labPath, 'utf8'));
   const decoded = decodeWav(new Uint8Array(readFileSync(file)));
-  const device = quantize16(resampleAll(toMono(decoded), decoded.sampleRate, 16000));
-  const audio = resampleAll(device, 16000, SAMPLE_RATE);
+  const device = quantize16(resampleAll(toMono(decoded), decoded.sampleRate, captureRate));
+  const audio = resampleAll(device, captureRate, SAMPLE_RATE);
   songs.push({ file, segments, audio, seconds: audio.length / SAMPLE_RATE });
 }
 

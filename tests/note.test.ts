@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { analyseNoteFrame, LiveNoteDetector, midiToFrequency, NOTE_HOP, NOTE_SAMPLE_RATE, NOTE_WINDOW, noteName, type NoteReading } from '../src/engine/note';
+import { analyseNoteFrame, LiveNoteDetector, midiToFrequency, NOTE_HOP, NOTE_SAMPLE_RATE, NOTE_WINDOW, noteHop, noteName, type NoteReading, noteWindow } from '../src/engine/note';
 
 const PIANO = [1, 0.6, 0.35, 0.25, 0.12, 0.08];
 let seed = 7;
 const rand = (): number => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
 
-/** Adds a harmonic tone (16 kHz) to `out`. */
-const tone = (out: Float32Array, midi: number, amp: number, harmonics = PIANO, cents = 0): Float32Array => {
+/** Adds a harmonic tone (at `rate`, partials up to 0.47 * rate) to `out`. */
+const tone = (out: Float32Array, midi: number, amp: number, harmonics = PIANO, cents = 0, rate = NOTE_SAMPLE_RATE): Float32Array => {
   const f = midiToFrequency(midi + cents / 100);
   const phase = rand() * 2 * Math.PI;
   harmonics.forEach((a, h) => {
     const fh = f * (h + 1);
-    if (fh > 7500) return;
-    for (let i = 0; i < out.length; i++) out[i] += amp * a * Math.sin((2 * Math.PI * fh * i) / NOTE_SAMPLE_RATE + phase * (h + 1));
+    if (fh > 0.47 * rate) return;
+    for (let i = 0; i < out.length; i++) out[i] += amp * a * Math.sin((2 * Math.PI * fh * i) / rate + phase * (h + 1));
   });
   return out;
 };
@@ -70,6 +70,71 @@ describe('note detection', () => {
     const noise = frame();
     for (let i = 0; i < noise.length; i++) noise[i] = (rand() - 0.5) * 0.2;
     expect(analyseNoteFrame(noise)!.confidence).toBeLessThan(0.2);
+  });
+});
+
+describe('note detection at higher capture rates', () => {
+  const at = (rate: number) => ({
+    frame: () => new Float32Array(noteWindow(rate)),
+    tone: (out: Float32Array, midi: number, amp: number, harmonics = PIANO) => tone(out, midi, amp, harmonics, 0, rate),
+    analyse: (f: Float32Array) => analyseNoteFrame(f, undefined, rate),
+  });
+
+  it('keeps the 16 kHz window and hop durations', () => {
+    expect(noteWindow(16000)).toBe(NOTE_WINDOW);
+    expect(noteHop(16000)).toBe(NOTE_HOP);
+    expect(noteWindow(48000) / 48000).toBeCloseTo(NOTE_WINDOW / NOTE_SAMPLE_RATE, 3);
+    expect(noteHop(44100) / 44100).toBeCloseTo(NOTE_HOP / NOTE_SAMPLE_RATE, 3);
+  });
+
+  it.each([22050, 44100, 48000])('finds notes, chords and melody notes as at 16 kHz (%i Hz)', (rate) => {
+    const r = at(rate);
+    for (const midi of [28, 40, 60, 69, 96, 108]) {
+      const e = r.analyse(r.tone(r.frame(), midi, 0.2));
+      expect(e?.name).toBe(noteName(midi));
+      expect(e?.confidence).toBeGreaterThan(0.9);
+      expect(Math.abs(e!.cents)).toBeLessThan(3);
+    }
+    const triad = (): Float32Array => {
+      const f = r.frame();
+      for (const m of [48, 52, 55]) r.tone(f, m, 0.1);
+      return f;
+    };
+    expect(r.analyse(triad())!.confidence).toBeLessThan(0.3);
+    const melody = r.analyse(r.tone(triad(), 76, 0.3))!;
+    expect(melody.name).toBe('E5');
+    expect(melody.confidence).toBeGreaterThan(0.6);
+  });
+
+  it('names high melody notes over a chord more reliably than at 16 kHz', () => {
+    // E7 and G7 have only their fundamental below 8 kHz; at 48 kHz several partials survive.
+    const hits = (rate: number): number => {
+      const r = at(rate);
+      seed = 11;
+      let n = 0;
+      for (let t = 0; t < 20; t++) {
+        for (const midi of [100, 103]) {
+          const f = r.frame();
+          for (const m of [60, 64, 67, 72]) r.tone(f, m, 0.1);
+          if (r.analyse(r.tone(f, midi, 0.15))?.name === noteName(midi)) n++;
+        }
+      }
+      return n;
+    };
+    expect(hits(48000)).toBe(40);
+    expect(hits(16000)).toBeLessThan(35);
+  });
+
+  it('streams at 44.1 kHz with a reading every 64 ms', () => {
+    const rate = 44100;
+    const audio = tone(new Float32Array(rate), 69, 0.2, PIANO, 0, rate);
+    const detector = new LiveNoteDetector({}, rate);
+    const readings: NoteReading[] = [];
+    for (let i = 0; i < audio.length; i += 1764) readings.push(...detector.push(audio.subarray(i, i + 1764)));
+    expect(readings.length).toBe(Math.floor((audio.length - noteWindow(rate)) / noteHop(rate)) + 1);
+    expect(readings[1].time - readings[0].time).toBeCloseTo(0.064, 3);
+    expect(readings.at(-1)!.note?.name).toBe('A4');
+    expect(readings.at(-1)!.level).toBe('clear');
   });
 });
 

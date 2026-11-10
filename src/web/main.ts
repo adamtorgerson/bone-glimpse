@@ -105,6 +105,8 @@ const send = (msg: ToWorker): void => {
 const setStatus = (text: string, error = false): void => {
   ui.status.textContent = text;
   ui.status.classList.toggle('error', error);
+  // On a phone the status line is far above the controls; make errors visible.
+  if (error) ui.status.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 };
 
 const updateOutputs = (): void => {
@@ -195,7 +197,8 @@ const startWorker = (backend: Backend, active: boolean): void => {
 const onAppReady = (loadMs: number): void => {
   ready = true;
   ui.start.disabled = !!source;
-  if ((params.has('autostart') || glassesAutostart) && !source) void start();
+  // Glasses autostart is for the Even mics only: a file/mic source needs a tap to unlock audio.
+  if ((params.has('autostart') || (glassesAutostart && isEvenSource(ui.source.value))) && !source) void start();
   glasses?.set('detail', 'ready · tap to listen', 2);
   setStatus(`Model ready · ${describeBackend('wasm')} · loaded in ${(loadMs / 1000).toFixed(1)} s`);
   // Preload WebGPU only after WASM is up, so the first load isn't slowed down.
@@ -314,6 +317,7 @@ const start = async (): Promise<void> => {
   ui.start.disabled = true;
   ui.stop.disabled = false;
   ui.download.disabled = true;
+  setStatus(`Starting ${source.name}…`);
   try {
     await source.start((pcm, level) => {
       recording.push(pcm);
@@ -328,9 +332,10 @@ const start = async (): Promise<void> => {
     tick = window.setInterval(onTick, 100);
     if (ui.source.value === 'mic') void refreshMics(); // labels become available after permission
   } catch (error) {
-    setStatus(`Could not start ${source.name}: ${String(error)}`, true);
-    glasses?.set('status', `could not start ${source.name}`, 3);
-    await stop();
+    const name = source.name;
+    await stop(); // first: stop() writes its own "Stopped" status, which would hide the error
+    setStatus(`Could not start ${name}: ${String(error)}`, true);
+    glasses?.set('status', `could not start ${name}`, 3);
   }
 };
 
@@ -412,7 +417,7 @@ const connectGlasses = async (): Promise<void> => {
   });
   setStatus(`Connected to Even app · ${ready ? 'model ready' : 'loading model…'}`);
   glassesAutostart = true;
-  if (ready && !source) void start();
+  if (ready && !source && isEvenSource(ui.source.value)) void start();
 };
 
 const download = (): void => {

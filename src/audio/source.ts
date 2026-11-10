@@ -33,18 +33,19 @@ class Tap extends AudioWorkletProcessor {
 registerProcessor('pcm-tap', Tap);
 `;
 
-/** Taps a node's output, converts to device format (16 kHz, s16) and forwards chunks. */
-export const createTap = async (context: AudioContext, node: AudioNode, onChunk: ChunkHandler): Promise<AudioWorkletNode> => {
-  const url = URL.createObjectURL(new Blob([TAP_WORKLET], { type: 'application/javascript' }));
-  await context.audioWorklet.addModule(url);
-  URL.revokeObjectURL(url);
-  const tap = new AudioWorkletNode(context, 'pcm-tap', { numberOfInputs: 1, numberOfOutputs: 0 });
+/**
+ * Taps a node's output, converts to device format (16 kHz, s16) and forwards chunks.
+ * Uses an AudioWorklet where available; on insecure origins (e.g. the phone
+ * loading the dev server over http://<LAN-IP>) `audioWorklet` is undefined, so
+ * it falls back to the deprecated but universally supported ScriptProcessorNode.
+ */
+export const createTap = async (context: AudioContext, node: AudioNode, onChunk: ChunkHandler): Promise<AudioNode> => {
   const resampler = new StreamResampler(context.sampleRate, DEVICE_SAMPLE_RATE);
   // Batch ~40 ms per chunk, roughly the cadence of BLE audio packets.
   let pending: Float32Array[] = [];
   let pendingLength = 0;
-  tap.port.onmessage = (e: MessageEvent<Float32Array>) => {
-    const out = resampler.push(e.data);
+  const push = (mono: Float32Array): void => {
+    const out = resampler.push(mono);
     pending.push(out);
     pendingLength += out.length;
     if (pendingLength < DEVICE_SAMPLE_RATE * 0.04) return;
@@ -60,6 +61,33 @@ export const createTap = async (context: AudioContext, node: AudioNode, onChunk:
     for (const v of chunk) sum += v * v;
     onChunk(quantize16(chunk), Math.sqrt(sum / chunk.length));
   };
+
+  if (context.audioWorklet) {
+    const url = URL.createObjectURL(new Blob([TAP_WORKLET], { type: 'application/javascript' }));
+    await context.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    const tap = new AudioWorkletNode(context, 'pcm-tap', { numberOfInputs: 1, numberOfOutputs: 0 });
+    tap.port.onmessage = (e: MessageEvent<Float32Array>) => push(e.data);
+    node.connect(tap);
+    return tap;
+  }
+
+  // Fallback: same arithmetic-mean downmix as the worklet.
+  const channels = Math.max(1, Math.min(2, node.channelCount));
+  const tap = context.createScriptProcessor(4096, channels, 1);
+  tap.onaudioprocess = (e) => {
+    const input = e.inputBuffer;
+    const n = input.length;
+    const mono = new Float32Array(n);
+    for (let c = 0; c < input.numberOfChannels; c++) {
+      const data = input.getChannelData(c);
+      for (let i = 0; i < n; i++) mono[i] += data[i] / input.numberOfChannels;
+    }
+    push(mono);
+  };
+  // A ScriptProcessor only runs while connected to the destination; route it through silence.
+  const mute = new GainNode(context, { gain: 0 });
   node.connect(tap);
+  tap.connect(mute).connect(context.destination);
   return tap;
 };

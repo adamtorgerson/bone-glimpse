@@ -5,13 +5,16 @@ keyboard.
 It's main purpose is to display chord/scale names, keys played, and finger
 positions.
 
-It can display any chord, and recognizes the 170 class set, fallig
+When displaying a keyboard, it should use a textual view as wide as
+possible. Left and right fingerings should be indicated on the keys.
+
+It can display any chord, and recognizes the 170 class set, falling
 back when confidence is low.
 
 It has two main modes: scale mode and chord mode.
 
 In scale mode, the user selects a scale and bpm, and the app runs
-through various scale progressons.
+through various scale progressons with the keyboard display.
 
 In chord mode, input data can come from several sources:
 

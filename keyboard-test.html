@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BoneGlimpse keyboard test screens</title>
+    <link rel="stylesheet" href="/src/web/style.css" />
+    <style>
+      #screens .current button { outline: 2px solid currentColor; }
+      #dump { font-size: 11px; overflow-x: auto; }
+      #preview canvas { max-width: 100%; image-rendering: pixelated; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Keyboard test screens</h1>
+      <p id="status">Looking for the glasses…</p>
+      <ol id="screens"></ol>
+      <div class="buttons">
+        <button id="step-down">◀ note</button>
+        <button id="step-up">note ▶</button>
+        <button id="next-key">next key</button>
+      </div>
+      <div id="preview"></div>
+      <pre id="dump"></pre>
+    </main>
+    <script type="module" src="/src/web/keyboard-test.ts"></script>
+  </body>
+</html>

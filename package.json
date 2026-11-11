@@ -14,6 +14,7 @@
     "eval": "tsx scripts/eval.ts",
     "synth": "tsx scripts/synth.ts",
     "sim": "evenhub-simulator http://localhost:5180",
+    "sim:keys": "evenhub-simulator http://localhost:5180/keyboard-test.html",
     "qr": "tsx scripts/qr.ts",
     "pack": "npm run build && tsx scripts/check-bundle.ts && evenhub pack app.json dist -o boneglimpse.ehpk"
   },

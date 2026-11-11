@@ -14,6 +14,9 @@
 import {
   CreateStartUpPageContainer,
   type EvenAppBridge,
+  ImageContainerProperty,
+  ImageRawDataUpdate,
+  ImageRawDataUpdateResult,
   ListContainerProperty,
   ListItemContainerProperty,
   RebuildPageContainer,
@@ -31,10 +34,14 @@ type Slot = { id: number; name: string; content: string; color: number; sent?: {
  *
  * kind "box" is an empty list container: just its border, no text (content
  * and colour are ignored). It is how key outlines are drawn without images.
+ * kind "image" is an image container (20–288 x 20–144 px, at most 4 a page)
+ * showing `image` (encoded, e.g. PNG bytes), sent once the page is up; images
+ * take ~1 s to arrive, so only for things that stay put while a layout lasts.
  * Containers are transparent and stack in page order (later = in front).
  */
 export type SlotSpec = {
-  kind?: 'text' | 'box';
+  kind?: 'text' | 'box' | 'image';
+  image?: number[];
   y: number;
   height: number;
   content: string;
@@ -79,6 +86,17 @@ const box = (slot: Slot, spec: SlotSpec, z?: number): ListContainerProperty =>
     zOrderIndex: z,
   });
 
+const image = (id: number, name: string, spec: SlotSpec, z?: number): ImageContainerProperty =>
+  new ImageContainerProperty({
+    xPosition: spec.x ?? 12,
+    yPosition: spec.y,
+    width: spec.width ?? 288,
+    height: spec.height,
+    containerID: id,
+    containerName: name,
+    zOrderIndex: z,
+  });
+
 const container = (slot: Slot, spec: SlotSpec, z?: number): TextContainerProperty =>
   new TextContainerProperty({
     zOrderIndex: z,
@@ -106,20 +124,42 @@ export class GlassesDisplay {
 
   constructor(private readonly bridge: EvenAppBridge) {}
 
-  private build(page: Page): { containerTotalNum: number; textObject: TextContainerProperty[]; listObject?: ListContainerProperty[] } {
+  private build(page: Page): {
+    containerTotalNum: number;
+    textObject: TextContainerProperty[];
+    listObject?: ListContainerProperty[];
+    imageObject?: ImageContainerProperty[];
+  } {
     const entries = Object.entries(page);
-    // Text slots only: boxes have no content to update.
+    const isText = (spec: SlotSpec): boolean => !spec.kind || spec.kind === 'text';
+    // Text slots only: boxes and images have no text to update.
     this.slots = new Map(
-      entries.flatMap(([name, spec], i) => (spec.kind === 'box' ? [] : [[name, { id: i + 1, name, content: spec.content || ' ', color: spec.color }] as const])),
+      entries.flatMap(([name, spec], i) => (isText(spec) ? [[name, { id: i + 1, name, content: spec.content || ' ', color: spec.color }] as const] : [])),
     );
-    const boxes = entries.some(([, spec]) => spec.kind === 'box');
-    // z-order is all-or-nothing per page; only pages with boxes need it (later entries in front).
-    const z = (i: number): number | undefined => (boxes ? i + 1 : undefined);
-    const textObject = entries.flatMap(([name, spec], i) => (spec.kind === 'box' ? [] : [container(this.slots.get(name)!, spec, z(i))]));
+    const layered = entries.some(([, spec]) => !isText(spec));
+    // z-order is all-or-nothing per page; only pages with boxes or images need it (later entries in front).
+    const z = (i: number): number | undefined => (layered ? i + 1 : undefined);
+    const textObject = entries.flatMap(([name, spec], i) => (isText(spec) ? [container(this.slots.get(name)!, spec, z(i))] : []));
     const listObject = entries.flatMap(([name, spec], i) =>
       spec.kind === 'box' ? [box({ id: i + 1, name, content: '', color: 0 }, spec, z(i))] : [],
     );
-    return { containerTotalNum: entries.length, textObject, ...(listObject.length ? { listObject } : {}) };
+    const imageObject = entries.flatMap(([name, spec], i) => (spec.kind === 'image' ? [image(i + 1, name, spec, z(i))] : []));
+    return {
+      containerTotalNum: entries.length,
+      textObject,
+      ...(listObject.length ? { listObject } : {}),
+      ...(imageObject.length ? { imageObject } : {}),
+    };
+  }
+
+  /** Sends the page's images, one at a time (they must follow the page's creation). */
+  private async sendImages(page: Page): Promise<void> {
+    const entries = Object.entries(page);
+    for (const [i, [name, spec]] of entries.entries()) {
+      if (spec.kind !== 'image' || !spec.image) continue;
+      const result = await this.bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: i + 1, containerName: name, imageData: spec.image }));
+      if (!ImageRawDataUpdateResult.isSuccess(result)) throw new Error(`sending image ${name} failed (${String(result)})`);
+    }
   }
 
   /**
@@ -135,6 +175,7 @@ export class GlassesDisplay {
       if (!rebuilt) throw new Error(`creating the glasses page failed (${StartUpPageCreateResult[result] ?? result})`);
     }
     this.markSent(page);
+    await this.sendImages(page);
   }
 
   /** The page's initial content is on the glasses; anything set since then goes out next. */
@@ -153,7 +194,9 @@ export class GlassesDisplay {
     this.layout = layout;
     const slots = this.slots;
     if (!(await this.bridge.rebuildPageContainer(new RebuildPageContainer(built)))) throw new Error('switching the glasses page failed');
-    if (this.slots === slots) this.markSent(page); // unless another show() overtook this one
+    if (this.slots !== slots) return; // another show() overtook this one
+    this.markSent(page);
+    await this.sendImages(page);
   }
 
   /** Shows a frame: text updates when the layout is unchanged, otherwise a page rebuild. */

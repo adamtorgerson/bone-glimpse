@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { keyboardView, type Hands, scaleKey, scaleRun } from '../src/engine/scales';
 import { textWidth } from '../src/even/keyboard-text';
-import { SCALE_VIEW_IDS, scaleFrame, type ScaleScreen, widenedView } from '../src/even/scale-views';
+import { SCALE_VIEW_IDS, SCALE_VIEW_MAX_OCTAVES, scaleFrame, type ScaleScreen, widenedView } from '../src/even/scale-views';
 
 const screen = (hands: Hands, step: number | undefined, tonic = 2, octaves = 1): ScaleScreen => {
   const run = scaleRun(scaleKey('major', tonic), { octaves, hands });
@@ -12,7 +12,7 @@ const screen = (hands: Hands, step: number | undefined, tonic = 2, octaves = 1):
 describe('scale views', () => {
   it.each(SCALE_VIEW_IDS)('%s stays within the G2 page limits', (id) => {
     for (const tonic of [0, 1, 6]) {
-      for (const octaves of [1, 2]) {
+      for (let octaves = 1; octaves <= SCALE_VIEW_MAX_OCTAVES[id]; octaves++) {
         for (const hands of ['right', 'left', 'both'] as const) {
           for (const step of [undefined, 0, 3, 7, 12]) {
             const slots = Object.values(scaleFrame(id, screen(hands, step, tonic, octaves)).page);
@@ -82,5 +82,22 @@ describe('scale views', () => {
     expect(one.scaleKeys.content.split('\n')).toHaveLength(5);
     expect(scaleFrame('hands', screen('right', 0)).page.scaleKeys.content.split('\n')[4]).toBe('R');
     expect(Object.values(one).filter((p) => p.kind === 'box').length).toBe(5);
+  });
+
+  it('near: fingers only for the next notes, every key drawn', () => {
+    const s = screen('both', 10, 2, 4); // D major, 4 octaves
+    const digits = (page: ReturnType<typeof scaleFrame>['page']): string => (page.left.content + page.right.content).replace(/[^1-5①-⑤]/g, '');
+    const near = scaleFrame('near', s).page;
+    const dim = scaleFrame('dim', s).page;
+    expect(digits(near).length).toBe(2 * 8); // notes 8 to 15, both hands
+    expect(digits(dim).length).toBe(2 * 29); // every note of the run
+    expect(near.marker.content).toContain('●');
+  });
+
+  it('near/dim: a hand that is not playing gets no finger rows', () => {
+    const page = scaleFrame('dim', screen('right', 3, 2, 2)).page;
+    expect(page.left).toBeUndefined();
+    expect(page.right.content.split('\n').at(-1)).toBe('R');
+    expect(page.outline.y).toBe(0);
   });
 });

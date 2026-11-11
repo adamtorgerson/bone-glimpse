@@ -11,17 +11,25 @@
 //           the boundaries under the black keys; fingers above/below
 // hands     the groups keyboard drawn once per hand (L above, R below), each
 //           with that hand's fingers on the keys; one ● row between them
+// near      thin black keys in stacked rows (keyboard-rows.ts), fingers only
+//           for the next few notes: room for 4 octaves
+// dim       the same with every finger, key lines dimmer than keys and fingers
 import { type Hands, isBlackKey, type KeyboardKey, type KeyboardView, keyboardView, type RunNote } from '../engine/scales';
 import { type Frame, type Page } from './glasses-display';
+import { ROW, rowsKeyboard, type RowsSpec, text } from './keyboard-rows';
 import { keyboardText, placeGlyphs } from './keyboard-text';
 
-export type ScaleViewId = 'keyboard' | 'groups' | 'hands';
+export type ScaleViewId = 'keyboard' | 'groups' | 'hands' | 'near' | 'dim';
 export const SCALE_VIEWS: Record<ScaleViewId, string> = {
   keyboard: 'Keyboard (text)',
   groups: 'Keyboard (key-group outlines, 2+ octaves)',
   hands: 'Two keyboards (key-group outlines, one per hand)',
+  near: 'Thin keys, fingers for the next notes',
+  dim: 'Thin keys, dimmed lines',
 };
 export const SCALE_VIEW_IDS = Object.keys(SCALE_VIEWS) as ScaleViewId[];
+/** Longest run (octaves) each view fits across the screen. */
+export const SCALE_VIEW_MAX_OCTAVES: Record<ScaleViewId, number> = { keyboard: 2, groups: 2, hands: 2, near: 4, dim: 4 };
 export const isScaleViewId = (value: unknown): value is ScaleViewId => typeof value === 'string' && value in SCALE_VIEWS;
 
 /** Everything a view may show. */
@@ -248,7 +256,37 @@ const handsFrame = (s: ScaleScreen): Frame => {
   return { layout: `hands:${hands.join('+')}:${shape.whites[0].midi % 12}:${shape.whites.length}`, page };
 };
 
+/** `view` with fingers only on the keys of the run's next few notes (two back, five on from `step`). */
+export const nearFingers = (view: KeyboardView, run: RunNote[], step: number): KeyboardView => {
+  const near = new Set(run.slice(Math.max(0, step - 2), step + 6).map(viewMidi));
+  const copy = (k: KeyboardKey): KeyboardKey => (near.has(k.midi) ? { ...k } : { ...k, right: undefined, left: undefined });
+  const whites = view.whites.map(copy);
+  const blacks = view.blacks.map(copy);
+  return { whites, blacks, byMidi: new Map([...whites, ...blacks].map((k) => [k.midi, k])) };
+};
+
+/** Thin black keys (▌), black-key fingers on a row of their own outside the white-key ones. */
+const THIN: RowsSpec = { black: '▌', tiers: 2, blackRows: 2, blackZoneLines: false };
+
+/**
+ * Stacked-row keyboard of the run (near: fingers for the next notes only; dim:
+ * dimmed key lines). The status gets two lines when they fit (one hand), else one.
+ */
+const thinFrame = (id: 'near' | 'dim', s: ScaleScreen): Frame => {
+  const view = id === 'near' ? nearFingers(s.view, s.run, s.position) : s.view;
+  const dim = id === 'dim';
+  const { page, free } = rowsKeyboard(dim ? { ...THIN, style: { dim } } : THIN, view, s.note && viewMidi(s.note), {
+    left: playing(s.hands, 'left'),
+    right: playing(s.hands, 'right'),
+  });
+  const now = s.active ? `${s.now} · ${s.next}` : s.now;
+  const lines = free <= 288 - 2 * ROW - 6 ? [s.title, now] : [`${s.title.split(' · ')[0]} · ${now}`];
+  page.scaleStatus = text(Math.max(free, 288 - lines.length * ROW - 6), lines, s.active ? 4 : dim ? 2 : 3, { capture: true });
+  return { layout: `${id}:${s.hands}:${view.whites[0].midi % 12}:${view.whites.length}`, page };
+};
+
 export const scaleFrame = (id: ScaleViewId, screen: ScaleScreen): Frame => {
+  if (id === 'near' || id === 'dim') return thinFrame(id, screen);
   if (id === 'hands') return handsFrame(screen);
   if (id === 'groups') return groupsFrame(screen);
   return keyboardFrame(screen);

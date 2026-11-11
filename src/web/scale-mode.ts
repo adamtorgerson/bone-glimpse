@@ -9,7 +9,7 @@ import { OsEventTypeList } from '@evenrealities/even_hub_sdk';
 import { type AfterRun, ScaleSequencer, type SequencerSnapshot, type SequencerStep } from '../engine/scale-sequencer';
 import { HANDS, type Hands, isScaleType, type KeyboardView, keysFor, nextKey, type RunNote, SCALE_TYPE_IDS, SCALE_TYPES, scaleKey, type ScaleKey, type ScaleType } from '../engine/scales';
 import { type Frame, type GlassesDisplay } from '../even/glasses-display';
-import { isScaleViewId, SCALE_VIEW_IDS, SCALE_VIEWS, scaleFrame, type ScaleScreen, type ScaleViewId } from '../even/scale-views';
+import { isScaleViewId, SCALE_VIEW_IDS, SCALE_VIEW_MAX_OCTAVES, SCALE_VIEWS, scaleFrame, type ScaleScreen, type ScaleViewId } from '../even/scale-views';
 import { Metronome } from './metronome';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
@@ -41,8 +41,8 @@ const loadSettings = (): Settings => {
     const viewParam = new URLSearchParams(location.search).get('view'); // ?view=strip etc. overrides the saved view
     if (isScaleViewId(viewParam)) s.view = viewParam;
     if (!isScaleViewId(s.view)) s.view = DEFAULTS.view;
-    if (!isScaleType(s.type) || !HANDS.includes(s.hands) || ![1, 2].includes(s.octaves) || ![1, 2, 4].includes(s.notesPerBeat)) return DEFAULTS;
-    return { ...s, bpm: Math.max(BPM_MIN, Math.min(BPM_MAX, Number(s.bpm) || DEFAULTS.bpm)) };
+    if (!isScaleType(s.type) || !HANDS.includes(s.hands) || ![1, 2, 3, 4].includes(s.octaves) || ![1, 2, 4].includes(s.notesPerBeat)) return DEFAULTS;
+    return { ...s, octaves: Math.min(s.octaves, SCALE_VIEW_MAX_OCTAVES[s.view]), bpm: Math.max(BPM_MIN, Math.min(BPM_MAX, Number(s.bpm) || DEFAULTS.bpm)) };
   } catch {
     return DEFAULTS;
   }
@@ -124,11 +124,6 @@ export class ScaleMode {
     ui.type.replaceChildren(...SCALE_TYPE_IDS.map((id) => new Option(SCALE_TYPES[id].label, id)));
     ui.hands.replaceChildren(...HANDS.map((h) => new Option(HAND_LABELS[h], h)));
     ui.view.replaceChildren(...SCALE_VIEW_IDS.map((id) => new Option(SCALE_VIEWS[id], id)));
-    ui.view.addEventListener('change', () => {
-      this.settings.view = ui.view.value as ScaleViewId;
-      this.save();
-      if (!this.playing) this.renderIdle(); // while playing, the next step shows it
-    });
     ui.bpm.min = String(BPM_MIN);
     ui.bpm.max = String(BPM_MAX);
     this.syncControls();
@@ -149,6 +144,15 @@ export class ScaleMode {
     ui.key.addEventListener('change', () => changed({ tonic: Number(ui.key.value) }));
     ui.hands.addEventListener('change', () => changed({ hands: ui.hands.value as Hands }));
     ui.octaves.addEventListener('change', () => changed({ octaves: Number(ui.octaves.value) }));
+    ui.view.addEventListener('change', () => {
+      const view = ui.view.value as ScaleViewId;
+      // A view that does not fit the run's octaves shortens the run.
+      if (this.settings.octaves > SCALE_VIEW_MAX_OCTAVES[view]) return changed({ view, octaves: SCALE_VIEW_MAX_OCTAVES[view] });
+      this.settings.view = view;
+      this.save();
+      this.syncControls();
+      if (!this.playing) this.renderIdle(); // while playing, the next step shows it
+    });
     ui.perBeat.addEventListener('change', () => changed({ notesPerBeat: Number(ui.perBeat.value) }));
     ui.after.addEventListener('change', () => changed({ after: ui.after.value as AfterRun }));
     ui.bpm.addEventListener('input', () => this.setBpm(Number(ui.bpm.value)));
@@ -177,6 +181,7 @@ export class ScaleMode {
     ui.key.value = String(s.tonic);
     ui.hands.value = s.hands;
     ui.octaves.value = String(s.octaves);
+    for (const o of ui.octaves.options) o.disabled = Number(o.value) > SCALE_VIEW_MAX_OCTAVES[s.view];
     ui.perBeat.value = String(s.notesPerBeat);
     ui.after.value = s.after;
     ui.click.checked = s.click;

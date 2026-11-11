@@ -2,11 +2,8 @@
 // keyboard-test.html). Each screen draws one static scale keyboard across the
 // full width, fingers above (left hand) and below (right hand).
 //
-// Glyphs (measured in evenhub-simulator 0.9.5): rows are 27 px apart and block
-// glyphs 21 px tall, so text rows stacked 20 px apart (one container each) make
-// black keys and key boundaries continuous. Spaces are 5 px. The block glyphs
-// advance 20 px; their ink differs: █ 0–20, ▉ 0–15, ▊ 0–13, ▌ 0–10, │ 9–11.
-// Lines wrap past 576 px; a text container holds at most 999 bytes.
+// The stacked-row text keyboards and the glyph measurements behind them are in
+// keyboard-rows.ts (scale mode uses them too).
 //
 // Image screens draw the keyboard as two 288 px wide images side by side
 // (images are at most 288 x 144, 4 a page). The drawing is a list of shapes
@@ -14,10 +11,11 @@
 // run, so only the marker (text) changes from note to note.
 import { type KeyboardKey, type KeyboardView, keyboardView, type RunNote, scaleRun, type ScaleKey } from '../engine/scales';
 import { type Frame, type Page } from './glasses-display';
+import { type BlackGlyph, CIRCLED, FINGER_LINE_END, GLYPH, place, ROW, rowsKeyboard, STACK, text, TOP, W } from './keyboard-rows';
+export { place, textWidth } from './keyboard-rows';
 import { keyboardText } from './keyboard-text';
-import { widenedView } from './scale-views';
+import { nearFingers, widenedView } from './scale-views';
 
-type BlackGlyph = '█' | '▉' | '▊' | '▌';
 export type TestScreen = {
   name: string;
   octaves: 2 | 3 | 4 | 5;
@@ -110,51 +108,6 @@ export const TEST_SCREENS: TestScreen[] = [
   { name: '4 oct · text, dimmed lines', octaves: 4, minWhites: 0, black: '▌', tiers: 2, blackRows: 2, blackZoneLines: false, style: { dim: true } },
 ];
 
-const W = 576;
-/** Glyph top below a text container's y when its padding is 0. */
-const TOP = 4;
-const ROW = 27;
-const GLYPH = 21;
-/** Pitch of stacked key rows: 1 px overlap hides the dim antialiased edge between them. */
-const STACK = 20;
-const CIRCLED = ['', '①', '②', '③', '④', '⑤'];
-/** Ink centre of a glyph within its 20 px advance. */
-const INK_CENTRE: Record<string, number> = { '█': 10, '▉': 7.5, '▊': 6.5, '▌': 5, '│': 10, _: 3 };
-
-const SPACE = 5;
-/**
- * Advance widths measured here (simulator 0.9.5), not the shared table in
- * keyboard-text.ts: spaces are 5 px, and digits spaced out in a finger row
- * are wider than next to each other (they kern there). Other glyphs used: 20 px.
- */
-const WIDTH: Record<string, number> = { ' ': SPACE, _: 9, '1': 8.125, '2': 12, '3': 12.875, '4': 12, '5': 12.875, R: 12.875, L: 9 };
-export const textWidth = (text: string): number => [...text].reduce((w, ch) => w + (WIDTH[ch] ?? 20), 0);
-/** Rightmost x a line may reach: lines wrap past 576 px. */
-const LINE_END = 574;
-/** The same for finger rows, with a little room for the digits' fractional widths. */
-const FINGER_LINE_END = 572;
-
-/**
- * One line with each glyph's ink (not its advance box) centred on x, to the
- * nearest space (5 px), kept within the line. (Glyphs the font lacks draw as
- * a 4 px gap, which could place to 1 px, but the wrapper miscounts them.)
- */
-export const place = (items: { x: number; text: string }[], end = LINE_END): string => {
-  let line = '';
-  let cursor = 0;
-  for (const { x, text } of [...items].sort((a, b) => a.x - b.x)) {
-    const w = textWidth(text);
-    const start = Math.min(end - w, x - (INK_CENTRE[text] ?? w / 2));
-    const spaces = Math.max(0, Math.round((start - cursor) / SPACE));
-    line += ' '.repeat(spaces) + text;
-    cursor += spaces * SPACE + w;
-  }
-  return line || ' ';
-};
-
-const text = (y: number, lines: string[], color = 4, extra: Partial<Page[string]> = {}): Page[string] => ({
-  x: 0, width: W, y: Math.round(y), height: lines.length * ROW + 6, padding: 0, content: lines.join('\n'), color, ...extra,
-});
 
 export type TestState = { screen: number; key: ScaleKey; step: number };
 
@@ -186,88 +139,15 @@ export const testFrame = ({ screen, key, step }: TestState): TestFrame => {
 
   if (s.special) return specialFrame(s, { screen, key, step }, view, note, title, info);
 
-  // White key i spans edge(i)..edge(i+1); the outline box draws the outer edges.
-  const n = view.whites.length;
-  const kw = W / n;
-  const edge = (i: number): number => kw * i;
-  const whiteX = (i: number): number => edge(i + 0.5);
-  const blackX = (b: KeyboardKey): number => edge(b.afterWhite! + 1);
-  const blackAt = new Set(view.blacks.map((b) => b.afterWhite! + 1));
-  const inner = Array.from({ length: n - 1 }, (_, i) => i + 1);
-
-  const black = s.black!;
-  const onKeys = s.tiers === 'keys';
-  const style = s.style ?? {};
-  // Black-key rows, top to bottom. The current black key: ○ at its tip, or on
-  // the top row when the lower rows carry fingers (L, then R).
-  const blackRow = (r: number): string => {
-    const glyph = (b: KeyboardKey): string => {
-      const hand = onKeys ? ([undefined, 'left', 'right'] as const)[r] : undefined;
-      if (hand) return b[hand] ? CIRCLED[b[hand]!] : black;
-      return b.midi === current && !style.tip && r === (onKeys ? 0 : s.blackRows! - 1) ? '○' : black;
-    };
-    return place([
-      ...view.blacks.map((b) => ({ x: blackX(b), text: glyph(b) })),
-      ...(s.blackZoneLines === false || style.dim ? [] : inner.filter((i) => !blackAt.has(i)).map((i) => ({ x: edge(i), text: '│' }))),
-    ]);
-  };
-  // Tips: the current key's tip is hollow.
-  const hollow = { '●': '○', '▼': '▽' } as const;
-  const tipRow = style.tip ? place(view.blacks.map((b) => ({ x: blackX(b), text: b.midi === current ? hollow[style.tip!] : style.tip! }))) : undefined;
-  const currentWhite = view.whites.findIndex((w) => w.midi === current);
-  // Below 20 px a key, │ glyphs (20 px advances) do not fit side by side: every
-  // other boundary goes on a second row laid over the first.
-  const split = kw < 20.5;
-  const whiteRow = place(inner.filter((i) => !split || i % 2 === 0).map((i) => ({ x: edge(i), text: '│' })));
-  const whiteRow2 = split ? place(inner.filter((i) => i % 2 === 1).map((i) => ({ x: edge(i), text: '│' }))) : undefined;
-  // The ● goes on a row of its own laid over the white-key row: at 3 octaves it
-  // and the boundary lines either side (20 px advances each) do not fit in one line.
-  // With lips, the marker takes the current key's lip (one row for both).
-  const markerGlyph = style.marker ?? '●';
-  const markerRow = style.lip
-    ? place(view.whites.map((_, i) => ({ x: whiteX(i), text: i === currentWhite ? markerGlyph : kw >= 30 ? '▂' : '_' })))
-    : currentWhite >= 0
-      ? place([{ x: whiteX(currentWhite), text: markerGlyph }])
-      : ' ';
-  const whiteFingers = (hand: 'left' | 'right'): string =>
-    place(view.whites.flatMap((w, i) => (w[hand] ? [{ x: whiteX(i), text: String(w[hand]) }] : [])), FINGER_LINE_END);
-  const blackFingers = (hand: 'left' | 'right'): string =>
-    place(view.blacks.flatMap((b) => (b[hand] ? [{ x: blackX(b), text: CIRCLED[b[hand]!] }] : [])), FINGER_LINE_END);
-  const bothFingers = (hand: 'left' | 'right'): string =>
-    place([
-      ...view.whites.flatMap((w, i) => (w[hand] ? [{ x: whiteX(i), text: String(w[hand]) }] : [])),
-      ...view.blacks.flatMap((b) => (b[hand] ? [{ x: blackX(b), text: CIRCLED[b[hand]!] }] : [])),
-    ], FINGER_LINE_END);
-  // Black-key fingers on the outer row: L above them, R below them.
-  const leftLines =
-    s.tiers === 2 ? ['L', blackFingers('left'), whiteFingers('left')] : onKeys ? ['L', whiteFingers('left')] : ['L', bothFingers('left')];
-  const rightLines =
-    s.tiers === 2 ? [whiteFingers('right'), blackFingers('right'), 'R'] : onKeys ? [whiteFingers('right'), 'R'] : [bothFingers('right'), 'R'];
-
-  const page: Page = {};
-  const kbTop = TOP + (leftLines.length - 1) * ROW + GLYPH + 5; // outline top
-  const rows = [...Array.from({ length: s.blackRows! }, (_, r) => blackRow(r)), whiteRow];
-  const kbBottom = kbTop + 3 + (rows.length - 1) * STACK + GLYPH + 3;
-  page.outline = { kind: 'box', x: 0, width: W, y: kbTop, height: kbBottom - kbTop, content: '', color: 0, border: { width: 2, color: style.dim ? 6 : 15, radius: style.dim ? 6 : 3 } };
-  if (style.rail) page.rail = { kind: 'box', x: 0, width: W, y: kbTop, height: 4, content: '', color: 0, border: { width: 2, color: 12, radius: 1 } };
-  page.left = text(0, leftLines);
-  const lineColour = style.dim ? 2 : 4;
-  rows.forEach((row, r) => {
-    page[`row${r}`] = text(kbTop + 3 + r * STACK - TOP, [row], r === rows.length - 1 ? lineColour : 4, { height: GLYPH + 6 });
-  });
-  if (whiteRow2) page.row2b = text(kbTop + 3 + (rows.length - 1) * STACK - TOP, [whiteRow2], lineColour, { height: GLYPH + 6 });
-  if (tipRow) page.tip = text(kbTop + 3 + (rows.length - 1) * STACK - 10 - TOP, [tipRow], 4, { height: GLYPH + 6 });
-  page.marker = text(kbTop + 3 + (rows.length - 1) * STACK - TOP, [markerRow], 4, { height: GLYPH + 6 });
-  const rightY = kbBottom + 5 - TOP;
-  page.right = text(rightY, rightLines);
+  const { page, free, dump } = rowsKeyboard(
+    { black: s.black!, tiers: s.tiers!, blackRows: s.blackRows!, blackZoneLines: s.blackZoneLines, style: s.style },
+    view,
+    current,
+  );
   // Status at the bottom: two lines when they fit, else just the key and the note.
-  const free = rightY + rightLines.length * ROW;
   const statusLines = free <= 288 - 2 * ROW - 6 ? [title, info] : [info];
-  page.status = text(Math.max(free, 288 - statusLines.length * ROW - 6), statusLines, style.dim ? 2 : 3, { capture: true });
-  return {
-    frame: { layout: `s${screen}`, page },
-    dump: [...leftLines, ...rows, ...(whiteRow2 ? [whiteRow2] : []), ...(tipRow ? [tipRow] : []), markerRow, ...rightLines].join('\n'),
-  };
+  page.status = text(Math.max(free, 288 - statusLines.length * ROW - 6), statusLines, s.style?.dim ? 2 : 3, { capture: true });
+  return { frame: { layout: `s${screen}`, page }, dump };
 };
 
 
@@ -515,15 +395,6 @@ const octaveWindow = (view: KeyboardView, current: number): { view: KeyboardView
     view: rangeView(view, start, start + 36),
     overview: octaves.map((c) => (c >= start && c < start + 36 ? '■' : '□')).join(''),
   };
-};
-
-/** `view` with fingers only on the keys of the run's next few notes (two back, five on). */
-const nearFingers = (view: KeyboardView, run: RunNote[], step: number): KeyboardView => {
-  const near = new Set(run.slice(Math.max(0, step - 2), step + 6).map((n) => n.right!.midi));
-  const copy = (k: KeyboardKey): KeyboardKey => (near.has(k.midi) ? { ...k } : { ...k, right: undefined, left: undefined });
-  const whites = view.whites.map(copy);
-  const blacks = view.blacks.map(copy);
-  return { whites, blacks, byMidi: new Map([...whites, ...blacks].map((k) => [k.midi, k])) };
 };
 
 /**
